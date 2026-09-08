@@ -29,8 +29,11 @@ type call struct {
 type fakeClient struct {
 	panes  []snapshot.Pane
 	layout snapshot.Layout
-	calls  []call
-	nextID string
+	// layouts holds a layout per tab id for the tests that span more than one
+	// tab; when a tab is absent here the single `layout` above is used.
+	layouts map[string]snapshot.Layout
+	calls   []call
+	nextID  string
 	// errs maps a call name ("list", "layout", "split", "swap", "run",
 	// "rename", "close") to the error that call returns. The attempt is still
 	// recorded, but the fake's world is left unchanged.
@@ -39,6 +42,9 @@ type fakeClient struct {
 	// call onwards, simulating the UI process stamping itself. 0 never stamps:
 	// the UI never came up.
 	stampAfterList int
+	// ran records the panes RunInPane started the UI in; those are the panes
+	// stampAfterList can stamp.
+	ran map[string]bool
 	// listN counts PaneList calls; beforeList runs at the start of the listN'th
 	// call, so a test can inspect or mutate the world between two reads the way
 	// a concurrent `pasture ensure` process would.
@@ -56,9 +62,12 @@ func (f *fakeClient) PaneList() ([]snapshot.Pane, error) {
 	if err := f.errs["list"]; err != nil {
 		return nil, err
 	}
+	// Model what really happens: `pasture ui`, once run in a pane, stamps that
+	// pane's token. Keying on the panes RunInPane touched (rather than on the
+	// pane a split created) is what lets a revived pane stamp too.
 	if f.stampAfterList > 0 && f.listN >= f.stampAfterList {
 		for i := range f.panes {
-			if f.panes[i].PaneID == f.nextID {
+			if f.ran[f.panes[i].PaneID] {
 				f.panes[i].Tokens = map[string]string{Token: "1"}
 			}
 		}
@@ -70,10 +79,16 @@ func (f *fakeClient) Layout(paneID string) (snapshot.Layout, error) {
 	if err := f.errs["layout"]; err != nil {
 		return snapshot.Layout{}, err
 	}
-	// Only one layout is stored, so refuse a pane from another tab rather than
+	// Refuse a pane from a tab this fake has no layout for, rather than
 	// silently handing back the wrong geometry and letting a test pass on it.
 	for _, p := range f.panes {
-		if p.PaneID == paneID && f.layout.TabID != "" && p.TabID != f.layout.TabID {
+		if p.PaneID != paneID {
+			continue
+		}
+		if l, ok := f.layouts[p.TabID]; ok {
+			return l, nil
+		}
+		if f.layout.TabID != "" && p.TabID != f.layout.TabID {
 			return snapshot.Layout{}, fmt.Errorf("fake has no layout for tab %s", p.TabID)
 		}
 	}
@@ -102,7 +117,14 @@ func (f *fakeClient) Swap(source, target string) error {
 
 func (f *fakeClient) RunInPane(paneID, command string) error {
 	f.rec("run", paneID, command)
-	return f.errs["run"]
+	if err := f.errs["run"]; err != nil {
+		return err
+	}
+	if f.ran == nil {
+		f.ran = map[string]bool{}
+	}
+	f.ran[paneID] = true
+	return nil
 }
 
 // Rename records the call and, like herdr, actually labels the pane, so a pane
@@ -844,5 +866,100 @@ func TestTargetColumnsClampsToTheFloorAndHalfTheTab(t *testing.T) {
 		if got := targetColumns(tc.columns, tc.tab); got != tc.want {
 			t.Errorf("targetColumns(%d, %d) = %d, want %d", tc.columns, tc.tab, got, tc.want)
 		}
+	}
+}
+
+// A herdr server restart (which an upgrade forces) restores the pane but not
+// the process inside it, and herdr fires no events for the restore, so nothing
+// heals the dock until the user next changes focus. Startup is the [[startup]]
+// hook that closes those corpses and re-docks their tabs.
+func TestStartupHealsEveryTabThatHadADock(t *testing.T) {
+	c := oneTab()
+	c.layout.Area.Width = 200
+	c.panes = append(c.panes,
+		snapshot.Pane{PaneID: "w1:p5", TabID: "w1:t1", WorkspaceID: "w1", Cwd: "/r", Label: Label},
+		snapshot.Pane{PaneID: "w2:p1", TabID: "w2:t1", WorkspaceID: "w2", Cwd: "/r2"},
+		snapshot.Pane{PaneID: "w2:p5", TabID: "w2:t1", WorkspaceID: "w2", Cwd: "/r2", Label: Label},
+	)
+	c.layouts = map[string]snapshot.Layout{
+		"w1:t1": c.layout,
+		"w2:t1": {TabID: "w2:t1", Area: snapshot.Rect{Width: 200, Height: 40}, Panes: []snapshot.LayoutPane{
+			{PaneID: "w2:p1", Rect: snapshot.Rect{X: 0, Y: 1, Width: 100, Height: 40}},
+			{PaneID: "w2:p5", Rect: snapshot.Rect{X: 100, Y: 1, Width: 100, Height: 40}},
+		}},
+	}
+	if err := Startup(deps(t, c)); err != nil {
+		t.Fatal(err)
+	}
+	// Reviving in place: the UI is re-run in the pane the restart left behind,
+	// so neither tab is closed or split.
+	revived := map[string]bool{}
+	for _, call := range c.calls {
+		switch call.Name {
+		case "run":
+			revived[call.Args[0]] = true
+		case "close", "split":
+			t.Fatalf("a revivable dock must not be rebuilt, calls = %v", c.calls)
+		}
+	}
+	if !revived["w1:p5"] || !revived["w2:p5"] {
+		t.Fatalf("both docks must be revived, calls = %v", c.calls)
+	}
+}
+
+// When the revived pane never stamps its token the pane is genuinely dead, so
+// fall back to closing it and building a fresh dock.
+func TestStartupRebuildsWhenTheRevivedPaneStaysDead(t *testing.T) {
+	c := oneTab()
+	c.layout.Area.Width = 200
+	c.stampAfterList = 0 // the UI never comes up, in the corpse or its successor
+	c.panes = append(c.panes, snapshot.Pane{
+		PaneID: "w1:p5", TabID: "w1:t1", WorkspaceID: "w1", Cwd: "/r", Label: Label,
+	})
+	if err := Startup(deps(t, c)); err != nil {
+		t.Fatal(err)
+	}
+	if argOf(c.calls, "close", 0) != "w1:p5" {
+		t.Fatalf("the dead pane must be closed, calls = %v", c.calls)
+	}
+	if argOf(c.calls, "split", 0) == "" {
+		t.Fatalf("a fresh dock must be built, calls = %v", names(c.calls))
+	}
+}
+
+// A tab whose dock is alive needs no healing, and a tab that never had one must
+// not gain a dock just because the server restarted.
+func TestStartupLeavesLiveAndUndockedTabsAlone(t *testing.T) {
+	c := oneTab()
+	c.layout.Area.Width = 200
+	c.panes = append(c.panes, snapshot.Pane{
+		PaneID: "w1:p5", TabID: "w1:t1", Label: Label,
+		Tokens: map[string]string{Token: "77"},
+	})
+	if err := Startup(deps(t, c)); err != nil {
+		t.Fatal(err)
+	}
+	for _, call := range c.calls {
+		if call.Name == "split" || call.Name == "close" {
+			t.Fatalf("nothing to heal, but got %v", c.calls)
+		}
+	}
+}
+
+// auto_open governs automatic docking on focus. Restoring a dock the user
+// already had is not that, so a restart must bring it back either way.
+func TestStartupHealsEvenWithAutoOpenOff(t *testing.T) {
+	c := oneTab()
+	c.layout.Area.Width = 200
+	c.panes = append(c.panes, snapshot.Pane{
+		PaneID: "w1:p5", TabID: "w1:t1", WorkspaceID: "w1", Cwd: "/r", Label: Label,
+	})
+	d := deps(t, c)
+	d.Cfg.AutoOpen = false
+	if err := Startup(d); err != nil {
+		t.Fatal(err)
+	}
+	if argOf(c.calls, "run", 0) != "w1:p5" {
+		t.Fatalf("the dock should be restored, calls = %v", c.calls)
 	}
 }
