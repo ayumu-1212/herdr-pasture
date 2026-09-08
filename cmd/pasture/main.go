@@ -2,6 +2,7 @@
 //
 //	pasture ui        run the docked TUI (inside a herdr pane)
 //	pasture ensure    make sure the current tab has a pasture pane (event hook)
+//	pasture startup   restore docks a server restart left dead (startup hook)
 //	pasture toggle    open/close the pasture pane in the current tab (action)
 //	pasture redeploy  close every pasture pane so they respawn on the next focus
 //	pasture version   print the plugin version
@@ -25,9 +26,9 @@ import (
 
 // version must match herdr-plugin.toml's version field: `herdr plugin list`
 // reports the manifest's, and `pasture version` reports this one.
-const version = "0.2.0"
+const version = "0.2.1"
 
-const usage = "usage: pasture <ui|ensure|toggle|redeploy|version>"
+const usage = "usage: pasture <ui|ensure|startup|toggle|redeploy|version>"
 
 func main() {
 	if len(os.Args) < 2 {
@@ -57,6 +58,8 @@ func main() {
 		err = runUI(cfg, client)
 	case "ensure":
 		err = dock.Ensure(deps(cfg, client), os.Getenv("HERDR_TAB_ID"))
+	case "startup":
+		err = dock.Startup(deps(cfg, client))
 	case "toggle":
 		err = dock.Toggle(deps(cfg, client), os.Getenv("HERDR_TAB_ID"))
 	case "redeploy":
@@ -74,7 +77,7 @@ func main() {
 		// there exits 1 rather than claiming work that did not happen; dock's
 		// message already names any busy tab and the recovery is to invoke the
 		// action again in a moment.
-		if os.Args[1] != "ensure" {
+		if os.Args[1] != "ensure" && os.Args[1] != "startup" {
 			os.Exit(1)
 		}
 	}

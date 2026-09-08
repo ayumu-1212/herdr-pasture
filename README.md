@@ -160,6 +160,10 @@ leftmost column. The change takes effect on the next herdr launch.
 - A pane manually renamed `pasture` is adopted (and closed) as one of ours.
 - With `width_columns` set, a width you change by hand is reset to the target on
   the next focus event.
+- A herdr server restart (`herdr update` forces one) leaves each dock as an empty
+  shell, because the pane comes back but the process in it does not. The
+  `[[startup]]` hook runs the UI in those panes again straight away, so the dock
+  is back before you touch anything.
 
 ## Tested with
 
@@ -176,3 +180,9 @@ under its own directory's group, pressing Enter on that row switching to the
 workspace, `width_columns = 30` clamping to 27 on a 54-column tab (half the
 tab), and a dock widened by hand to 38 columns snapping back to 27 on the next
 `ensure`.
+
+Also verified against herdr **0.9.0**, using its release binary against a copy
+of a real 0.8.0 config: the plugin stays registered across the version change,
+the event hooks fire, docking and the fixed width behave the same, and a server
+restart, which leaves every dock as an empty shell and fires no event at all, is
+recovered in place by the `[[startup]]` hook.

@@ -10,6 +10,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
@@ -113,6 +114,87 @@ func Ensure(d Deps, tabID string) error {
 	return open(d, tabID)
 }
 
+// Startup restores the docks a herdr server restart left dead. Restarting
+// rebuilds the pane but not the process inside it, so a dock comes back as a
+// bare shell carrying Label without Token, and herdr fires no lifecycle event
+// for the restore: verified against 0.9.0, a restarted server logs no plugin
+// command at all, and the empty column sits there until the user happens to
+// change focus. This runs from the manifest's [[startup]] hook instead.
+//
+// It heals only tabs that already had a dock. A tab that never had one is left
+// alone: bringing docks back is restoring what the user had, whereas docking a
+// new tab is what auto_open decides on focus. For the same reason auto_open is
+// not consulted here, so a dock opened by hand with auto_open = false also
+// survives a restart.
+func Startup(d Deps) error {
+	d = d.normalize()
+	panes, err := d.Client.PaneList()
+	if err != nil {
+		return err
+	}
+	var tabs []string
+	seen := map[string]bool{}
+	for _, p := range panes {
+		if !isPasture(p) || p.Tokens[Token] != "" || seen[p.TabID] {
+			continue
+		}
+		// A live dock elsewhere in the same tab means this is not a restart
+		// corpse, so classify has the final say.
+		if live, _ := classify(panes, p.TabID); live != "" {
+			continue
+		}
+		seen[p.TabID] = true
+		tabs = append(tabs, p.TabID)
+	}
+	sort.Strings(tabs) // deterministic order, and deterministic logs
+	for _, tabID := range tabs {
+		if err := restore(d, tabID); err != nil {
+			d.logf("restoring tab %s: %v", tabID, err)
+		}
+	}
+	return nil
+}
+
+// restore brings tab tabID's dock back. It first tries to revive the pane the
+// restart left behind by running the UI in it again: that pane is already on
+// the left edge at the width the user had, and its shell survived the restart,
+// so reviving costs one command and disturbs no layout. Only if the pane never
+// stamps its token does it fall back to openLocked, which closes it and builds
+// a fresh one. Rebuilding first is worse right after a restart, when every
+// shell in the session is still coming up and a freshly split pane is the least
+// likely to be ready for `pane run`.
+func restore(d Deps, tabID string) error {
+	unlock, ok := acquireLock(d, tabID)
+	if !ok {
+		d.logf("another pasture command holds tab %s; skipping", tabID)
+		return nil
+	}
+	defer unlock()
+
+	panes, err := d.Client.PaneList()
+	if err != nil {
+		return err
+	}
+	live, corpses := classify(panes, tabID)
+	if live != "" {
+		return nil // something got there first
+	}
+	if len(corpses) == 1 {
+		paneID := corpses[0]
+		d.logf("reviving the dock in pane %s after a server restart", paneID)
+		if err := d.Client.RunInPane(paneID, shellQuote(d.Bin)+" ui"); err != nil {
+			d.logf("reviving %s: %v; rebuilding instead", paneID, err)
+		} else if waitForToken(d, paneID) {
+			return nil
+		} else {
+			d.logf("pane %s did not come back; rebuilding it", paneID)
+		}
+	}
+	// More than one corpse, or the revived pane stayed dead: openLocked closes
+	// every corpse in the tab and docks a fresh one.
+	return openLocked(d, tabID)
+}
+
 // open takes tabID's lock and builds the dock under it. A caller that already
 // holds the lock (Toggle) must call openLocked instead, or it deadlocks against
 // itself.
@@ -211,14 +293,8 @@ func openLocked(d Deps, tabID string) error {
 		reap(d, newID)
 		return err
 	}
-	for i := 0; i < tokenRetries; i++ {
-		// Sleep first: the UI cannot possibly have stamped itself in the
-		// microseconds since `pane run` typed the command. Sleeping after the
-		// last check would only delay releasing the lock.
-		d.Sleep(tokenWait)
-		if hasToken(d, newID) {
-			return nil
-		}
+	if waitForToken(d, newID) {
+		return nil
 	}
 	d.logf("pane %s never stamped its %q token within %s; it carries the label, so the next ensure reaps it",
 		newID, Token, time.Duration(tokenRetries)*tokenWait)
@@ -451,6 +527,20 @@ func leftmost(d Deps, panes []snapshot.Pane, tabID string) (snapshot.Pane, snaps
 		return snapshot.Pane{}, snapshot.Layout{}, false
 	}
 	return p, layout, true
+}
+
+// waitForToken blocks until paneID's UI stamps its token, up to
+// tokenRetries * tokenWait. It sleeps before each check: the UI cannot have
+// stamped itself in the microseconds since `pane run` typed the command, and
+// sleeping after the last check would only delay releasing the lock.
+func waitForToken(d Deps, paneID string) bool {
+	for i := 0; i < tokenRetries; i++ {
+		d.Sleep(tokenWait)
+		if hasToken(d, paneID) {
+			return true
+		}
+	}
+	return false
 }
 
 func hasToken(d Deps, paneID string) bool {

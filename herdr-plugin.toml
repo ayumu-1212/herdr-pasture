@@ -1,12 +1,19 @@
 id = "herdr-pasture"
 name = "Pasture"
-version = "0.2.0"
+version = "0.2.1"
 min_herdr_version = "0.8.0"
 description = "Agents grouped by repository, docked on the left of every tab"
 platforms = ["macos", "linux"]
 
 [[build]]
 command = ["sh", "scripts/build.sh"]
+
+# A server restart (which `herdr update` forces) rebuilds each pane but not the
+# process inside it, and fires no lifecycle event for the restore, so a dock
+# comes back as an empty shell that nothing heals until the user happens to
+# change focus. This hook restores them straight away.
+[[startup]]
+command = ["./bin/pasture", "startup"]
 
 # Manual entry point (`herdr plugin pane open --plugin herdr-pasture --entrypoint ui`).
 # Normal docking goes through `ensure`, which needs split + swap for a left edge.
