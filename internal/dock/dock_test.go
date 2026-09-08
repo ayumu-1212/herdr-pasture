@@ -443,13 +443,13 @@ func TestReleaseLeavesALockItNoLongerOwns(t *testing.T) {
 
 // A tab id that looks like a path must not let a lock or snooze file escape the
 // state dir.
-func TestTabKeyCannotEscapeTheStateDir(t *testing.T) {
+func TestSanitizeIDCannotEscapeTheStateDir(t *testing.T) {
 	d := deps(t, oneTab())
 	state := filepath.Clean(d.StateDir)
 	snoozeDir := filepath.Join(state, "snooze")
 	for _, tabID := range []string{"w1:t1", "../../etc/passwd", "..", ".", "/", "a/b/c", "", "w1:t1/../../x"} {
-		if key := tabKey(tabID); key == "." || key == ".." || strings.ContainsRune(key, filepath.Separator) {
-			t.Fatalf("tabKey(%q) = %q, not a safe single component", tabID, key)
+		if key := sanitizeID(tabID); key == "." || key == ".." || strings.ContainsRune(key, filepath.Separator) {
+			t.Fatalf("sanitizeID(%q) = %q, not a safe single component", tabID, key)
 		}
 		if got := filepath.Dir(filepath.Clean(lockPath(d, tabID))); got != state {
 			t.Fatalf("lockPath(%q) sits in %q, want %q", tabID, got, state)
@@ -459,8 +459,8 @@ func TestTabKeyCannotEscapeTheStateDir(t *testing.T) {
 		}
 	}
 	// The happy path keeps the readable name the rest of the tests rely on.
-	if got := tabKey("w1:t1"); got != "w1_t1" {
-		t.Fatalf("tabKey(\"w1:t1\") = %q, want %q", got, "w1_t1")
+	if got := sanitizeID("w1:t1"); got != "w1_t1" {
+		t.Fatalf("sanitizeID(\"w1:t1\") = %q, want %q", got, "w1_t1")
 	}
 }
 

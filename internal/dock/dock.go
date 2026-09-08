@@ -61,14 +61,17 @@ type Deps struct {
 	Log      io.Writer
 }
 
-// normalize fills in the optional hooks so a caller that left them nil cannot
-// panic a herdr hook. Log stays optional and is guarded in logf.
+// normalize fills in the optional fields so a caller that left them nil cannot
+// panic a herdr hook. Every entry point calls it first.
 func (d Deps) normalize() Deps {
 	if d.Now == nil {
 		d.Now = time.Now
 	}
 	if d.Sleep == nil {
 		d.Sleep = time.Sleep
+	}
+	if d.Log == nil {
+		d.Log = io.Discard
 	}
 	return d
 }
@@ -106,21 +109,29 @@ func Ensure(d Deps, tabID string) error {
 		d.logf("tab %s is snoozed; skipping", tabID)
 		return nil
 	}
+	return open(d, tabID)
+}
+
+// open takes tabID's lock and builds the dock under it. A caller that already
+// holds the lock (Toggle) must call openLocked instead, or it deadlocks against
+// itself.
+func open(d Deps, tabID string) error {
 	unlock, ok := acquireLock(d, tabID)
 	if !ok {
 		d.logf("another pasture command holds tab %s; skipping", tabID)
 		return nil
 	}
 	defer unlock()
-	return open(d, tabID)
+	return openLocked(d, tabID)
 }
 
-// open assumes the caller holds tabID's lock. It reads the pane list itself
-// rather than taking one from the caller: every herdr event runs `pasture
-// ensure` as its own process, so a list read before the lock can be stale by
-// the time the lock is held (the process that went first may already have
-// docked this tab) and deciding from it would open a second pane in the tab.
-func open(d Deps, tabID string) error {
+// openLocked assumes the caller holds tabID's lock. It reads the pane list
+// itself rather than taking one from the caller: every herdr event runs
+// `pasture ensure` as its own process, so a list read before the lock can be
+// stale by the time the lock is held (the process that went first may already
+// have docked this tab) and deciding from it would open a second pane in the
+// tab.
+func openLocked(d Deps, tabID string) error {
 	panes, err := d.Client.PaneList()
 	if err != nil {
 		return err
@@ -240,7 +251,8 @@ func Toggle(d Deps, tabID string) error {
 	if err := setSnooze(d, tabID, false); err != nil {
 		return err
 	}
-	return open(d, tabID)
+	// openLocked, not open: this function already holds tabID's lock.
+	return openLocked(d, tabID)
 }
 
 // Redeploy closes every pasture pane (live or dead) and clears all snoozes so
@@ -375,11 +387,12 @@ func hasToken(d Deps, paneID string) bool {
 	return false
 }
 
-// tabKey turns a tab id into one safe filename component: everything outside
-// [A-Za-z0-9_-] becomes "_", so ":" and "/" and "." cannot survive, and
-// filepath.Base is applied as a second guard against a path ever escaping the
-// state dir.
-func tabKey(tabID string) string {
+// sanitizeID turns a herdr id into one safe filename component: everything
+// outside [A-Za-z0-9_-] becomes "_", so the ":" and "/" herdr puts in its ids
+// cannot survive, and filepath.Base is applied as a second guard against a
+// path ever escaping the state dir. Both the lock and the snooze file are
+// named through it.
+func sanitizeID(tabID string) string {
 	safe := strings.Map(func(r rune) rune {
 		switch {
 		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9', r == '_', r == '-':
@@ -397,7 +410,7 @@ func tabKey(tabID string) string {
 }
 
 func lockPath(d Deps, tabID string) string {
-	return filepath.Join(d.StateDir, "ensure."+tabKey(tabID)+".lock")
+	return filepath.Join(d.StateDir, "ensure."+sanitizeID(tabID)+".lock")
 }
 
 // acquireLock creates StateDir/ensure.<tab>.lock. The lock is per tab so that
@@ -468,7 +481,7 @@ func newNonce() (string, error) {
 }
 
 func snoozePath(d Deps, tabID string) string {
-	return filepath.Join(d.StateDir, "snooze", tabKey(tabID))
+	return filepath.Join(d.StateDir, "snooze", sanitizeID(tabID))
 }
 
 func snoozed(d Deps, tabID string) bool {
