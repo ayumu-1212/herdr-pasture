@@ -119,3 +119,13 @@ Outside herdr (no `HERDR_PLUGIN_CONFIG_DIR`) the config is read from
 - Repository lookups are cached for the life of the pane process; moving or
   re-pointing a worktree is picked up after a `redeploy`.
 - A pane manually renamed `pasture` is adopted (and closed) as one of ours.
+
+## Tested with
+
+herdr 0.8.0 on macOS (Darwin 25.4, arm64), Go 1.27.1. Verified end to end in an
+isolated `herdr --session pasture-dev`: docking at the left edge of a tab at the
+configured share of its width, grouping by repository across workspaces,
+collapsing a group, focusing an agent in another workspace, toggle closing and
+snoozing a tab, `ensure` skipping a snoozed tab, `ensure` being idempotent,
+reaping a pane whose token is gone and replacing it, and `redeploy` clearing
+every pane.
