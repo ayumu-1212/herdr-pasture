@@ -21,11 +21,23 @@ type Model struct {
 	fetch    Fetcher
 	resolver group.Resolver
 	opt      group.Options
+
+	// interval is the delay between a poll's result and the next poll. The
+	// tick is armed when a snapshot arrives rather than when one is
+	// requested, so the effective period is interval + fetch duration. That
+	// keeps a slow herdr from queueing overlapping subprocesses.
 	interval time.Duration
+
+	// gen identifies the live poll chain. Every fetch and tick carries the
+	// generation it was armed in, and Update drops messages from any other
+	// generation, so a manual refresh retires the chain already in flight
+	// instead of running a second one alongside it forever.
+	gen int
 
 	groups       []group.Group
 	collapsed    map[string]bool
 	cursor       int
+	offset       int // index of the first list line drawn under the title bar
 	width        int
 	height       int
 	disconnected bool
@@ -39,11 +51,12 @@ type line struct {
 }
 
 type snapshotMsg struct {
+	gen    int
 	groups []group.Group
 	err    error
 }
 
-type tickMsg struct{}
+type tickMsg struct{ gen int }
 
 // New builds a model that polls fetch every interval.
 func New(f Fetcher, r group.Resolver, opt group.Options, interval time.Duration) Model {
@@ -56,27 +69,33 @@ func (m Model) Init() tea.Cmd {
 }
 
 func (m Model) fetchCmd() tea.Cmd {
-	fetch, resolver, opt := m.fetch, m.resolver, m.opt
+	fetch, resolver, opt, gen := m.fetch, m.resolver, m.opt, m.gen
 	return func() tea.Msg {
 		s, err := fetch.Snapshot()
 		if err != nil {
-			return snapshotMsg{err: err}
+			return snapshotMsg{gen: gen, err: err}
 		}
-		return snapshotMsg{groups: group.Build(s, resolver, opt)}
+		return snapshotMsg{gen: gen, groups: group.Build(s, resolver, opt)}
 	}
 }
 
 func (m Model) tickCmd() tea.Cmd {
-	return tea.Tick(m.interval, func(time.Time) tea.Msg { return tickMsg{} })
+	gen := m.gen
+	return tea.Tick(m.interval, func(time.Time) tea.Msg { return tickMsg{gen: gen} })
 }
 
-// Update implements tea.Model.
+// Update advances the model. It returns the concrete Model rather than
+// tea.Model so tests keep the type; Task 8 wraps it for tea.NewProgram.
 func (m Model) Update(msg tea.Msg) (Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
 		m.width, m.height = msg.Width, msg.Height
+		m.clampCursor()
 		return m, nil
 	case snapshotMsg:
+		if msg.gen != m.gen {
+			return m, nil // a retired chain's result: drop it, don't re-arm
+		}
 		if msg.err != nil {
 			m.disconnected = true
 		} else {
@@ -86,19 +105,14 @@ func (m Model) Update(msg tea.Msg) (Model, tea.Cmd) {
 		m.clampCursor()
 		return m, m.tickCmd()
 	case tickMsg:
+		if msg.gen != m.gen {
+			return m, nil // a retired chain's tick: let it die here
+		}
 		return m, m.fetchCmd()
 	case tea.KeyMsg:
 		return m.handleKey(msg)
 	case tea.MouseMsg:
-		if msg.Action != tea.MouseActionPress || msg.Button != tea.MouseButtonLeft {
-			return m, nil
-		}
-		idx := msg.Y - 1 // row 0 is the title bar
-		if idx < 0 || idx >= len(m.lines()) {
-			return m, nil
-		}
-		m.cursor = idx
-		return m.activate(idx)
+		return m.handleMouse(msg)
 	}
 	return m, nil
 }
@@ -120,7 +134,37 @@ func (m Model) handleKey(msg tea.KeyMsg) (Model, tea.Cmd) {
 			return m.activate(m.cursor)
 		}
 	case "r":
+		m.gen++ // retire the tick already pending from the last snapshot
 		return m, m.fetchCmd()
+	}
+	return m, nil
+}
+
+func (m Model) handleMouse(msg tea.MouseMsg) (Model, tea.Cmd) {
+	if msg.Action != tea.MouseActionPress {
+		return m, nil
+	}
+	switch msg.Button {
+	case tea.MouseButtonWheelUp:
+		m.scroll(-1)
+		return m, nil
+	case tea.MouseButtonWheelDown:
+		m.scroll(1)
+		return m, nil
+	case tea.MouseButtonLeft:
+		if msg.Y < 1 {
+			return m, nil // row 0 is the title bar
+		}
+		screen := msg.Y - 1
+		if screen >= m.visibleRows() {
+			return m, nil // below the last drawn row
+		}
+		idx := screen + m.offset
+		if idx >= len(m.lines()) {
+			return m, nil
+		}
+		m.cursor = idx
+		return m.activate(idx)
 	}
 	return m, nil
 }
@@ -161,6 +205,43 @@ func (m Model) lines() []line {
 	return out
 }
 
+// visibleRows is how many list lines fit under the title bar. Before the
+// first WindowSizeMsg the pane size is unknown, so everything is drawn.
+func (m Model) visibleRows() int {
+	if m.height <= 0 {
+		return len(m.lines())
+	}
+	if m.height < 2 {
+		return 0
+	}
+	return m.height - 1
+}
+
+// scroll moves the viewport by delta lines, dragging the cursor along so it
+// never leaves the visible window.
+func (m *Model) scroll(delta int) {
+	n := len(m.lines())
+	vis := m.visibleRows()
+	if vis <= 0 || n <= vis {
+		return
+	}
+	m.offset += delta
+	if m.offset > n-vis {
+		m.offset = n - vis
+	}
+	if m.offset < 0 {
+		m.offset = 0
+	}
+	if m.cursor < m.offset {
+		m.cursor = m.offset
+	}
+	if m.cursor > m.offset+vis-1 {
+		m.cursor = m.offset + vis - 1
+	}
+}
+
+// clampCursor keeps the cursor on an existing line and scrolls the viewport
+// so the cursor stays drawn.
 func (m *Model) clampCursor() {
 	n := len(m.lines())
 	if m.cursor >= n {
@@ -168,5 +249,22 @@ func (m *Model) clampCursor() {
 	}
 	if m.cursor < 0 {
 		m.cursor = 0
+	}
+	vis := m.visibleRows()
+	if vis <= 0 {
+		m.offset = 0
+		return
+	}
+	if maxOffset := n - vis; m.offset > maxOffset {
+		m.offset = maxOffset
+	}
+	if m.cursor < m.offset {
+		m.offset = m.cursor
+	}
+	if m.cursor > m.offset+vis-1 {
+		m.offset = m.cursor - vis + 1
+	}
+	if m.offset < 0 {
+		m.offset = 0
 	}
 }
