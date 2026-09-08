@@ -1,6 +1,7 @@
 package group
 
 import (
+	"math/rand"
 	"reflect"
 	"testing"
 
@@ -112,5 +113,77 @@ func TestBuildTitleFallbackAndFocus(t *testing.T) {
 	}
 	if rows[1].Status != "blocked" || rows[1].Agent != "codex" {
 		t.Fatalf("row = %+v", rows[1])
+	}
+}
+
+// TestBuildGroupAndRowOrderIsDeterministic guards against Build's output
+// order depending on Go's randomized map iteration. Two groups
+// ("/a/x/hp" and "/b/x/hp") collide on basename, and two rows within the
+// first group tie on both workspace number and pane number (neither wA nor
+// wB appears in s.Workspaces, and both panes are "p1"), so both the group
+// sort and the row sort need a total order (a tiebreak beyond Label and
+// beyond WorkspaceNumber/pane-number) to be stable across input orderings.
+func TestBuildGroupAndRowOrderIsDeterministic(t *testing.T) {
+	basePanes := []snapshot.Pane{
+		pane("wA:p1", "wA", "/a/x/hp", "claude", "idle", "a1"),
+		pane("wB:p1", "wB", "/a/x/hp", "claude", "idle", "a2"),
+		pane("wC:p1", "wC", "/b/x/hp", "claude", "idle", "b1"),
+	}
+	resolver := mapResolver{"/a/x/hp": {Root: "/a/x/hp"}, "/b/x/hp": {Root: "/b/x/hp"}}
+	rng := rand.New(rand.NewSource(1))
+	var first []Group
+	for i := 0; i < 50; i++ {
+		panes := append([]snapshot.Pane(nil), basePanes...)
+		rng.Shuffle(len(panes), func(i, j int) { panes[i], panes[j] = panes[j], panes[i] })
+		gs := Build(snapshot.Snapshot{Panes: panes}, resolver, Options{})
+		if first == nil {
+			first = gs
+			continue
+		}
+		if !reflect.DeepEqual(gs, first) {
+			t.Fatalf("run %d: order differs from first run\ngot  %+v\nwant %+v", i, gs, first)
+		}
+	}
+}
+
+func TestBuildOrdersMalformedPaneIDLast(t *testing.T) {
+	s := snapshot.Snapshot{
+		Workspaces: []snapshot.Workspace{{WorkspaceID: "w1", Number: 1}},
+		Panes: []snapshot.Pane{
+			pane("bogus", "w1", "/r", "claude", "idle", "bogus"),
+			pane("w1:p1", "w1", "/r", "claude", "idle", "ok"),
+		},
+	}
+	gs := Build(s, mapResolver{"/r": {Root: "/r"}}, Options{})
+	got := []string{gs[0].Rows[0].PaneID, gs[0].Rows[1].PaneID}
+	want := []string{"w1:p1", "bogus"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("order = %v, want %v", got, want)
+	}
+}
+
+func TestBuildOrdersMissingWorkspaceLast(t *testing.T) {
+	s := snapshot.Snapshot{
+		Workspaces: []snapshot.Workspace{{WorkspaceID: "w1", Number: 1}},
+		Panes: []snapshot.Pane{
+			pane("w9:p1", "w9", "/r", "claude", "idle", "unknown-ws"),
+			pane("w1:p1", "w1", "/r", "claude", "idle", "known-ws"),
+		},
+	}
+	gs := Build(s, mapResolver{"/r": {Root: "/r"}}, Options{})
+	got := []string{gs[0].Rows[0].PaneID, gs[0].Rows[1].PaneID}
+	want := []string{"w1:p1", "w9:p1"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("order = %v, want %v", got, want)
+	}
+}
+
+func TestBuildWorktreeEmptyBranchYieldsEmptyRowBranch(t *testing.T) {
+	s := snapshot.Snapshot{Panes: []snapshot.Pane{
+		pane("w1:p1", "w1", "/r/.worktrees/feat", "claude", "idle", "t"),
+	}}
+	gs := Build(s, mapResolver{"/r/.worktrees/feat": {Root: "/r", IsWorktree: true, Branch: ""}}, Options{})
+	if gs[0].Rows[0].Branch != "" {
+		t.Fatalf("branch = %q, want empty", gs[0].Rows[0].Branch)
 	}
 }

@@ -9,7 +9,9 @@ import (
 	"github.com/ayumu-1212/herdr-pasture/internal/snapshot"
 )
 
-// Row is one agent pane as displayed in the list.
+// Row is one agent pane as displayed in the list. TabID is intentionally
+// omitted: focusing (and the Focused field below) is keyed by pane id, not
+// tab id, so callers never need it.
 type Row struct {
 	PaneID          string
 	WorkspaceID     string
@@ -36,6 +38,14 @@ type Options struct {
 	Exclude func(cwd string) bool
 }
 
+// unknownOrder is the sort position given to a workspace number or pane
+// number pasture can't determine (a WorkspaceID absent from
+// snapshot.Snapshot.Workspaces, or a PaneID that doesn't match "wM:pN").
+// herdr numbers workspaces and panes starting at 1, so this sorts such rows
+// after every real one rather than before (map/slice zero value would sort
+// them first, ahead of workspace/pane 1).
+const unknownOrder = 1 << 30
+
 // Build groups the snapshot's agent panes by repository. The output is fully
 // sorted so repeated calls with the same input give the same order.
 func Build(s snapshot.Snapshot, r Resolver, opt Options) []Group {
@@ -48,8 +58,10 @@ func Build(s snapshot.Snapshot, r Resolver, opt Options) []Group {
 		if p.Agent == "" {
 			continue
 		}
-		if opt.SelfToken != "" && p.Tokens[opt.SelfToken] != "" {
-			continue
+		if opt.SelfToken != "" {
+			if _, ok := p.Tokens[opt.SelfToken]; ok {
+				continue
+			}
 		}
 		if opt.Exclude != nil && opt.Exclude(p.Cwd) {
 			continue
@@ -72,10 +84,14 @@ func Build(s snapshot.Snapshot, r Resolver, opt Options) []Group {
 		if info.IsWorktree {
 			branch = info.Branch
 		}
+		wsNum, known := wsNumber[p.WorkspaceID]
+		if !known {
+			wsNum = unknownOrder
+		}
 		g.Rows = append(g.Rows, Row{
 			PaneID:          p.PaneID,
 			WorkspaceID:     p.WorkspaceID,
-			WorkspaceNumber: wsNumber[p.WorkspaceID],
+			WorkspaceNumber: wsNum,
 			Agent:           p.Agent,
 			Status:          p.AgentStatus,
 			Title:           title,
@@ -93,16 +109,29 @@ func Build(s snapshot.Snapshot, r Resolver, opt Options) []Group {
 	for _, k := range keys {
 		g := byKey[k]
 		g.Label = labels[k]
-		sort.SliceStable(g.Rows, func(i, j int) bool {
+		sort.Slice(g.Rows, func(i, j int) bool {
 			a, b := g.Rows[i], g.Rows[j]
 			if a.WorkspaceNumber != b.WorkspaceNumber {
 				return a.WorkspaceNumber < b.WorkspaceNumber
 			}
-			return paneNumber(a.PaneID) < paneNumber(b.PaneID)
+			an, bn := paneNumber(a.PaneID), paneNumber(b.PaneID)
+			if an != bn {
+				return an < bn
+			}
+			return a.PaneID < b.PaneID
 		})
 		groups = append(groups, *g)
 	}
-	sort.Slice(groups, func(i, j int) bool { return groups[i].Label < groups[j].Label })
+	// Label alone isn't unique when uniqueLabels still has a collision left
+	// over (e.g. two keys that share both basename and parent basename), so
+	// fall back to Key, which is unique by construction, to keep the order a
+	// total order and therefore stable across calls.
+	sort.Slice(groups, func(i, j int) bool {
+		if groups[i].Label != groups[j].Label {
+			return groups[i].Label < groups[j].Label
+		}
+		return groups[i].Key < groups[j].Key
+	})
 	return groups
 }
 
@@ -127,15 +156,17 @@ func uniqueLabels(keys []string) map[string]string {
 	return out
 }
 
-// paneNumber extracts N from "wM:pN"; unknown shapes sort last.
+// paneNumber extracts N from "wM:pN"; unknown shapes sort last. It uses the
+// last ":p" rather than the first so a workspace id that itself contains
+// ":p" can't be mistaken for the pane separator.
 func paneNumber(paneID string) int {
-	_, after, ok := strings.Cut(paneID, ":p")
-	if !ok {
-		return 1 << 30
+	i := strings.LastIndex(paneID, ":p")
+	if i < 0 {
+		return unknownOrder
 	}
-	n, err := strconv.Atoi(after)
+	n, err := strconv.Atoi(paneID[i+2:])
 	if err != nil {
-		return 1 << 30
+		return unknownOrder
 	}
 	return n
 }
