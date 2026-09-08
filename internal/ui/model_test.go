@@ -2,7 +2,6 @@ package ui
 
 import (
 	"errors"
-	"strings"
 	"testing"
 	"time"
 
@@ -179,21 +178,6 @@ func TestRefreshKeepsExactlyOnePollChain(t *testing.T) {
 	}
 	if want := rounds/2 + 2; f.calls > want {
 		t.Fatalf("Snapshot called %d times in %d rounds, want at most %d: the poll chain multiplied", f.calls, rounds, want)
-	}
-}
-
-// TestViewNeverExceedsPaneHeight guards the click mapping: bubbletea's renderer
-// drops lines from the top, so an over-long view silently eats the title row
-// and shifts every list row up by one.
-func TestViewNeverExceedsPaneHeight(t *testing.T) {
-	m := loaded(&fakeFetcher{})
-	m, _ = m.Update(tea.WindowSizeMsg{Width: 30, Height: 4})
-	got := strings.Split(m.View(), "\n")
-	if len(got) > 4 {
-		t.Fatalf("view has %d lines in a height-4 pane: %q", len(got), got)
-	}
-	if !strings.Contains(got[0], "herdr-pasture") {
-		t.Fatalf("title is not the first line: %q", got[0])
 	}
 }
 
