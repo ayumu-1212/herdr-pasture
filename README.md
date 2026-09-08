@@ -34,6 +34,24 @@ herdr plugin install ayumu-1212/herdr-pasture
 Requires herdr >= 0.8.0 and Go >= 1.27 (the build step compiles the binary).
 macOS and Linux.
 
+### Updating
+
+herdr 0.8.0 has no `plugin update`, so reinstall:
+
+```bash
+herdr plugin uninstall herdr-pasture
+herdr plugin install ayumu-1212/herdr-pasture
+herdr plugin action invoke herdr-pasture.redeploy
+```
+
+`uninstall` removes the plugin's code, not its config: your `config.toml` lives
+in the herdr-managed config directory and is kept. The `redeploy` at the end
+matters — panes opened by the old version keep running the old binary until they
+are closed, and redeploy closes them all so the next focus event respawns them.
+
+Check what you have with `herdr plugin list`, which reports the manifest's
+version. `herdr plugin install --ref <tag>` pins a specific release.
+
 ### Local development
 
 ```bash

@@ -23,7 +23,9 @@ import (
 	"github.com/ayumu-1212/herdr-pasture/internal/ui"
 )
 
-const version = "0.1.0"
+// version must match herdr-plugin.toml's version field: `herdr plugin list`
+// reports the manifest's, and `pasture version` reports this one.
+const version = "0.2.0"
 
 const usage = "usage: pasture <ui|ensure|toggle|redeploy|version>"
 
