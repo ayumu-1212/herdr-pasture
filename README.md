@@ -18,7 +18,10 @@ row to jump to that agent; click a group header to collapse it.
 - The focused agent's row is drawn in reverse video.
 - Worktrees are folded into their main repository and show their branch as
   `[branch]` before the title.
-- Panes without an agent are not listed, and neither are pasture's own panes.
+- Panes without an agent are not listed individually, and neither are pasture's
+  own panes.
+- A workspace with no agent running in it gets one `◦` row so it stays
+  reachable; clicking it switches to that workspace.
 - The title bar shows `disconnected` when `herdr api snapshot` is failing; the
   last known list stays on screen until herdr answers again.
 
@@ -93,9 +96,15 @@ and so is every key:
 ```toml
 auto_open = true          # false: never auto-dock; use the toggle action
 width_ratio = 0.25        # share of the tab width (0.1–0.5)
+width_columns = 0         # >0: fix the dock at this many columns, ignoring width_ratio
 poll_interval_ms = 1000   # how often to read `herdr api snapshot` (min 100)
 exclude = ["~/tmp/**"]    # hide panes whose cwd matches
 ```
+
+`width_columns` wins over `width_ratio` when it is 1 or more. The dock is
+re-measured on every focus event and nudged back to that column count, so it
+keeps its width when the terminal is resized. It is clamped to at least 22
+columns and at most half the tab.
 
 `exclude` patterns expand a leading `~` and `$VARS`. A trailing `/**` matches the
 directory and everything under it; anything else is a `filepath.Match` glob
@@ -104,6 +113,18 @@ defaults above and print a warning on stderr rather than failing the command.
 
 Outside herdr (no `HERDR_PLUGIN_CONFIG_DIR`) the config is read from
 `~/.config/herdr-pasture/config.toml`.
+
+## Replacing the herdr sidebar
+
+Every workspace appears in the list, so pasture can stand in for the standard
+sidebar. Turn that off in `~/.config/herdr/config.toml`:
+
+    [ui]
+    sidebar_start_collapsed = true
+    sidebar_collapsed_mode = "hidden"
+
+`hidden` gives the collapsed sidebar zero width, so the pasture pane becomes the
+leftmost column. The change takes effect on the next herdr launch.
 
 ## Known limitations
 
@@ -119,6 +140,8 @@ Outside herdr (no `HERDR_PLUGIN_CONFIG_DIR`) the config is read from
 - Repository lookups are cached for the life of the pane process; moving or
   re-pointing a worktree is picked up after a `redeploy`.
 - A pane manually renamed `pasture` is adopted (and closed) as one of ours.
+- With `width_columns` set, a width you change by hand is reset to the target on
+  the next focus event.
 
 ## Tested with
 
