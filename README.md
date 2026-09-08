@@ -152,3 +152,9 @@ collapsing a group, focusing an agent in another workspace, toggle closing and
 snoozing a tab, `ensure` skipping a snoozed tab, `ensure` being idempotent,
 reaping a pane whose token is gone and replacing it, and `redeploy` clearing
 every pane.
+
+v0.2 was verified the same way: a workspace with no agent showing as a `◦` row
+under its own directory's group, pressing Enter on that row switching to the
+workspace, `width_columns = 30` clamping to 27 on a 54-column tab (half the
+tab), and a dock widened by hand to 38 columns snapping back to 27 on the next
+`ensure`.
