@@ -72,6 +72,35 @@ func TestSplitOmitsEmptyCwd(t *testing.T) {
 	}
 }
 
+func TestFocusWorkspaceArgv(t *testing.T) {
+	r := &FakeRunner{}
+	if err := New(r).FocusWorkspace("w3"); err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"workspace", "focus", "w3"}
+	if !reflect.DeepEqual(r.Calls[0], want) {
+		t.Fatalf("argv = %v, want %v", r.Calls[0], want)
+	}
+}
+
+func TestResizeArgv(t *testing.T) {
+	r := &FakeRunner{}
+	c := New(r)
+	if err := c.Resize("w1:p2", 0.15); err != nil {
+		t.Fatal(err)
+	}
+	if err := c.Resize("w1:p2", -0.2); err != nil {
+		t.Fatal(err)
+	}
+	want := [][]string{
+		{"pane", "resize", "--pane", "w1:p2", "--direction", "right", "--amount", "0.1500"},
+		{"pane", "resize", "--pane", "w1:p2", "--direction", "left", "--amount", "0.2000"},
+	}
+	if !reflect.DeepEqual(r.Calls, want) {
+		t.Fatalf("argv = %v, want %v", r.Calls, want)
+	}
+}
+
 func TestSimpleCommandsArgv(t *testing.T) {
 	r := &FakeRunner{}
 	c := New(r)
