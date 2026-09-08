@@ -2,6 +2,8 @@
 package dock
 
 import (
+	"crypto/rand"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
@@ -22,9 +24,19 @@ const (
 	// survive restarts, so Label-without-Token identifies a dead pane.
 	Token = "pasture"
 
-	lockStale    = 30 * time.Second
+	// tokenRetries and tokenWait bound the wait for a freshly spawned UI to
+	// stamp its token: 30 x 200ms of sleeping, plus one `herdr pane list` exec
+	// per iteration, so the lock is really held for something nearer 8s than
+	// the nominal 6s.
 	tokenRetries = 30
 	tokenWait    = 200 * time.Millisecond
+	// lockStale must comfortably exceed that worst-case hold time, or a healthy
+	// ensure still waiting for its token would have its lock stolen mid-build.
+	lockStale = 30 * time.Second
+
+	// ownerFile holds the nonce of the process that created a lock directory,
+	// so a holder that was declared stale never deletes its successor's lock.
+	ownerFile = "owner"
 )
 
 // Client is the slice of herdr.Client that dock uses.
@@ -49,6 +61,18 @@ type Deps struct {
 	Log      io.Writer
 }
 
+// normalize fills in the optional hooks so a caller that left them nil cannot
+// panic a herdr hook. Log stays optional and is guarded in logf.
+func (d Deps) normalize() Deps {
+	if d.Now == nil {
+		d.Now = time.Now
+	}
+	if d.Sleep == nil {
+		d.Sleep = time.Sleep
+	}
+	return d
+}
+
 func (d Deps) logf(format string, args ...any) {
 	if d.Log != nil {
 		fmt.Fprintf(d.Log, "pasture: "+format+"\n", args...)
@@ -59,6 +83,7 @@ func (d Deps) logf(format string, args ...any) {
 // pane on its left edge. It never steals focus and never returns an error for
 // expected conditions (locked, snoozed, auto_open off).
 func Ensure(d Deps, tabID string) error {
+	d = d.normalize()
 	if !d.Cfg.AutoOpen {
 		d.logf("auto_open is false; skipping")
 		return nil
@@ -74,20 +99,27 @@ func Ensure(d Deps, tabID string) error {
 		d.logf("no target tab; skipping")
 		return nil
 	}
-	unlock, ok := acquireLock(d)
+	// Checked before locking as well as inside open: a snoozed tab is the
+	// common case on a busy session, and four hooks contending for a lock only
+	// to do nothing is pure latency.
+	if snoozed(d, tabID) {
+		d.logf("tab %s is snoozed; skipping", tabID)
+		return nil
+	}
+	unlock, ok := acquireLock(d, tabID)
 	if !ok {
-		d.logf("another ensure is running; skipping")
+		d.logf("another pasture command holds tab %s; skipping", tabID)
 		return nil
 	}
 	defer unlock()
 	return open(d, tabID)
 }
 
-// open assumes the lock is held. It reads the pane list itself rather than
-// taking one from the caller: every herdr event runs `pasture ensure` as its
-// own process, so a list read before the lock can be stale by the time the
-// lock is held (the process that went first may already have docked this tab)
-// and deciding from it would open a second pane in the same tab.
+// open assumes the caller holds tabID's lock. It reads the pane list itself
+// rather than taking one from the caller: every herdr event runs `pasture
+// ensure` as its own process, so a list read before the lock can be stale by
+// the time the lock is held (the process that went first may already have
+// docked this tab) and deciding from it would open a second pane in the tab.
 func open(d Deps, tabID string) error {
 	panes, err := d.Client.PaneList()
 	if err != nil {
@@ -114,8 +146,7 @@ func open(d Deps, tabID string) error {
 	}
 	anchor, ok := leftmost(d, panes, tabID)
 	if !ok {
-		d.logf("tab %s has no panes; skipping", tabID)
-		return nil
+		return nil // leftmost logged why
 	}
 	env := map[string]string{
 		"HERDR_PLUGIN_STATE_DIR":  d.StateDir,
@@ -132,40 +163,72 @@ func open(d Deps, tabID string) error {
 	if err != nil {
 		return err
 	}
+	// Label the pane before doing anything else with it. Only Label and Token
+	// make a pane recognisably ours, so a pane that dies between Split and
+	// Rename is an orphan no later Ensure would ever reap, and every following
+	// event would split yet another one.
+	if err := d.Client.Rename(newID, Label); err != nil {
+		d.logf("rename %s: %v; closing it rather than leaving an unreapable pane", newID, err)
+		reap(d, newID)
+		return err
+	}
 	if err := d.Client.Swap(newID, anchor.PaneID); err != nil {
+		reap(d, newID)
 		return err
 	}
 	if err := d.Client.RunInPane(newID, shellQuote(d.Bin)+" ui"); err != nil {
+		reap(d, newID)
 		return err
 	}
-	if err := d.Client.Rename(newID, Label); err != nil {
-		d.logf("rename %s: %v", newID, err)
-	}
 	for i := 0; i < tokenRetries; i++ {
+		// Sleep first: the UI cannot possibly have stamped itself in the
+		// microseconds since `pane run` typed the command. Sleeping after the
+		// last check would only delay releasing the lock.
+		d.Sleep(tokenWait)
 		if hasToken(d, newID) {
 			return nil
 		}
-		d.Sleep(tokenWait)
 	}
-	d.logf("pane %s never stamped its token", newID)
+	d.logf("pane %s never stamped its %q token within %s; it carries the label, so the next ensure reaps it",
+		newID, Token, time.Duration(tokenRetries)*tokenWait)
 	return nil
 }
 
-// Toggle closes the tab's live pasture pane (and snoozes the tab) or opens one
-// (clearing the snooze). Its open branch deliberately skips the auto_open gate
-// that Ensure applies: auto_open only governs automatic docking, so an explicit
-// toggle must still open the dock when the user has turned automatic docking
-// off. The open branch re-reads the pane list under the lock; see open.
-func Toggle(d Deps, tabID string) error {
-	panes, err := d.Client.PaneList()
-	if err != nil {
-		return err
+// reap closes a pane we created but could not finish setting up.
+func reap(d Deps, paneID string) {
+	if err := d.Client.Close(paneID); err != nil {
+		d.logf("close half-built pasture pane %s: %v", paneID, err)
 	}
+}
+
+// Toggle closes the tab's live pasture pane (and snoozes the tab) or opens one
+// (clearing the snooze). It deliberately skips the auto_open gate that Ensure
+// applies: auto_open governs only automatic docking, so an explicit toggle must
+// still work for a user who turned automatic docking off. The whole
+// decide-and-act sequence runs under the tab's lock.
+func Toggle(d Deps, tabID string) error {
+	d = d.normalize()
 	if tabID == "" {
+		panes, err := d.Client.PaneList()
+		if err != nil {
+			return err
+		}
 		tabID = focusedTab(panes)
 	}
 	if tabID == "" {
 		return errors.New("toggle: no focused tab")
+	}
+	unlock, ok := acquireLock(d, tabID)
+	if !ok {
+		// A toggle is an explicit keypress, so say so rather than doing
+		// nothing quietly.
+		return fmt.Errorf("toggle: another pasture command holds tab %s", tabID)
+	}
+	defer unlock()
+
+	panes, err := d.Client.PaneList()
+	if err != nil {
+		return err
 	}
 	live, _ := classify(panes, tabID)
 	if live != "" {
@@ -177,32 +240,58 @@ func Toggle(d Deps, tabID string) error {
 	if err := setSnooze(d, tabID, false); err != nil {
 		return err
 	}
-	unlock, ok := acquireLock(d)
-	if !ok {
-		d.logf("another ensure is running; skipping")
-		return nil
-	}
-	defer unlock()
 	return open(d, tabID)
 }
 
 // Redeploy closes every pasture pane (live or dead) and clears all snoozes so
-// the next focus event respawns them on the current build.
+// the next focus event respawns them on the current build. It takes each
+// affected tab's lock in turn; a tab whose lock is held is left alone and named
+// in the returned error, because closing a pane another process is still
+// building would leave a live pane running the old binary.
 func Redeploy(d Deps) error {
+	d = d.normalize()
 	panes, err := d.Client.PaneList()
 	if err != nil {
 		return err
 	}
+	var tabs []string
+	byTab := map[string][]string{}
 	for _, p := range panes {
-		if isPasture(p) {
-			if err := d.Client.Close(p.PaneID); err != nil {
-				d.logf("close %s: %v", p.PaneID, err)
+		if !isPasture(p) {
+			continue
+		}
+		if _, seen := byTab[p.TabID]; !seen {
+			tabs = append(tabs, p.TabID)
+		}
+		byTab[p.TabID] = append(byTab[p.TabID], p.PaneID)
+	}
+	var busy []string
+	for _, tab := range tabs {
+		unlock, ok := acquireLock(d, tab)
+		if !ok {
+			d.logf("tab %s is busy; leaving its pasture pane(s) in place", tab)
+			busy = append(busy, tab)
+			continue
+		}
+		for _, id := range byTab[tab] {
+			if err := d.Client.Close(id); err != nil {
+				d.logf("close %s: %v", id, err)
 			}
 		}
+		unlock()
 	}
-	return os.RemoveAll(filepath.Join(d.StateDir, "snooze"))
+	if err := os.RemoveAll(filepath.Join(d.StateDir, "snooze")); err != nil {
+		return err
+	}
+	if len(busy) > 0 {
+		return fmt.Errorf("redeploy: %d busy tab(s) left undisturbed: %s", len(busy), strings.Join(busy, ", "))
+	}
+	return nil
 }
 
+// isPasture reports whether a pane is one of ours. It trusts the label, so a
+// user pane manually renamed "pasture" would be adopted (and closed) as ours;
+// that is accepted as unlikely rather than defended against.
 func isPasture(p snapshot.Pane) bool {
 	return p.Label == Label || p.Tokens[Token] != ""
 }
@@ -232,7 +321,10 @@ func focusedTab(panes []snapshot.Pane) string {
 	return ""
 }
 
-// leftmost picks the pane to split: smallest X, then tallest, in tabID.
+// leftmost picks the pane to split: smallest X, then tallest, in tabID. When
+// the layout is unavailable it reports false rather than guessing: docking is
+// the whole point of knowing which pane is on the left edge, and a dock spliced
+// into the middle of a tab is worse than no dock until the next event.
 func leftmost(d Deps, panes []snapshot.Pane, tabID string) (snapshot.Pane, bool) {
 	byID := map[string]snapshot.Pane{}
 	var sample snapshot.Pane
@@ -243,12 +335,17 @@ func leftmost(d Deps, panes []snapshot.Pane, tabID string) (snapshot.Pane, bool)
 		}
 	}
 	if len(byID) == 0 {
+		d.logf("tab %s has no panes; skipping", tabID)
 		return snapshot.Pane{}, false
 	}
 	layout, err := d.Client.Layout(sample.PaneID)
-	if err != nil || len(layout.Panes) == 0 {
-		d.logf("layout unavailable (%v); using %s", err, sample.PaneID)
-		return sample, true
+	if err != nil {
+		d.logf("layout of tab %s unavailable (%v); not docking, the next event retries", tabID, err)
+		return snapshot.Pane{}, false
+	}
+	if len(layout.Panes) == 0 {
+		d.logf("layout of tab %s lists no panes; not docking, the next event retries", tabID)
+		return snapshot.Pane{}, false
 	}
 	best := layout.Panes[0]
 	for _, lp := range layout.Panes[1:] {
@@ -256,10 +353,12 @@ func leftmost(d Deps, panes []snapshot.Pane, tabID string) (snapshot.Pane, bool)
 			best = lp
 		}
 	}
-	if p, ok := byID[best.PaneID]; ok {
-		return p, true
+	p, ok := byID[best.PaneID]
+	if !ok {
+		d.logf("leftmost pane %s of tab %s is missing from the pane list; not docking", best.PaneID, tabID)
+		return snapshot.Pane{}, false
 	}
-	return sample, true
+	return p, true
 }
 
 func hasToken(d Deps, paneID string) bool {
@@ -276,10 +375,37 @@ func hasToken(d Deps, paneID string) bool {
 	return false
 }
 
-// acquireLock creates StateDir/ensure.lock. A lock older than lockStale is
-// treated as abandoned and taken over.
-func acquireLock(d Deps) (release func(), ok bool) {
-	path := filepath.Join(d.StateDir, "ensure.lock")
+// tabKey turns a tab id into one safe filename component: everything outside
+// [A-Za-z0-9_-] becomes "_", so ":" and "/" and "." cannot survive, and
+// filepath.Base is applied as a second guard against a path ever escaping the
+// state dir.
+func tabKey(tabID string) string {
+	safe := strings.Map(func(r rune) rune {
+		switch {
+		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9', r == '_', r == '-':
+			return r
+		default:
+			return '_'
+		}
+	}, tabID)
+	if safe == "" {
+		// filepath.Base("") is ".", which would make snoozePath name the snooze
+		// directory itself.
+		safe = "_"
+	}
+	return filepath.Base(safe)
+}
+
+func lockPath(d Deps, tabID string) string {
+	return filepath.Join(d.StateDir, "ensure."+tabKey(tabID)+".lock")
+}
+
+// acquireLock creates StateDir/ensure.<tab>.lock. The lock is per tab so that
+// building a dock in one tab (which can hold the lock for seconds while the UI
+// starts) never silently drops the ensure for another tab. A lock older than
+// lockStale is treated as abandoned and taken over.
+func acquireLock(d Deps, tabID string) (release func(), ok bool) {
+	path := lockPath(d, tabID)
 	if err := os.MkdirAll(d.StateDir, 0o755); err != nil {
 		d.logf("create state dir %s: %v", d.StateDir, err)
 		return nil, false
@@ -290,26 +416,59 @@ func acquireLock(d Deps) (release func(), ok bool) {
 		if statErr != nil || d.Now().Sub(fi.ModTime()) <= lockStale {
 			return nil, false
 		}
-		d.logf("stealing stale lock")
+		d.logf("stealing lock %s, abandoned for more than %s", path, lockStale)
 		if rmErr := os.RemoveAll(path); rmErr != nil {
 			d.logf("remove stale lock: %v", rmErr)
 			return nil, false
 		}
+		// Mkdir is atomic, so of several processes that saw the same stale lock
+		// exactly one gets the replacement.
 		err = os.Mkdir(path, 0o755)
 	}
 	if err != nil {
-		d.logf("acquire lock: %v", err)
+		d.logf("acquire lock %s: %v", path, err)
+		return nil, false
+	}
+	nonce, err := newNonce()
+	if err == nil {
+		err = os.WriteFile(filepath.Join(path, ownerFile), []byte(nonce), 0o644)
+	}
+	if err != nil {
+		d.logf("stamp lock %s: %v", path, err)
+		if rmErr := os.RemoveAll(path); rmErr != nil {
+			d.logf("remove unstamped lock: %v", rmErr)
+		}
 		return nil, false
 	}
 	return func() {
-		if err := os.Remove(path); err != nil {
-			d.logf("release lock: %v", err)
+		// Only remove the lock if it is still ours. A process whose lock was
+		// declared stale and stolen must not delete the thief's lock, or a
+		// third process could acquire it mid-split.
+		got, readErr := os.ReadFile(filepath.Join(path, ownerFile))
+		if readErr != nil {
+			d.logf("lock %s: owner unreadable (%v); leaving it to go stale", path, readErr)
+			return
+		}
+		if string(got) != nonce {
+			d.logf("lock %s was taken over by another process; not releasing it", path)
+			return
+		}
+		if err := os.RemoveAll(path); err != nil {
+			d.logf("release lock %s: %v", path, err)
 		}
 	}, true
 }
 
+func newNonce() (string, error) {
+	var b [16]byte
+	if _, err := rand.Read(b[:]); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(b[:]), nil
+}
+
 func snoozePath(d Deps, tabID string) string {
-	return filepath.Join(d.StateDir, "snooze", strings.ReplaceAll(tabID, ":", "_"))
+	return filepath.Join(d.StateDir, "snooze", tabKey(tabID))
 }
 
 func snoozed(d Deps, tabID string) bool {

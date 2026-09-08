@@ -1,10 +1,13 @@
 package dock
 
 import (
+	"bytes"
+	"errors"
 	"io"
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -27,12 +30,17 @@ type fakeClient struct {
 	layout snapshot.Layout
 	calls  []call
 	nextID string
-	// stampTokenOnList makes the next PaneList show the token on nextID,
-	// simulating the UI process stamping itself.
-	stampTokenOnList bool
+	// errs maps a call name ("list", "layout", "split", "swap", "run",
+	// "rename", "close") to the error that call returns. The attempt is still
+	// recorded, but the fake's world is left unchanged.
+	errs map[string]error
+	// stampAfterList stamps Token on nextID from the stampAfterList'th PaneList
+	// call onwards, simulating the UI process stamping itself. 0 never stamps:
+	// the UI never came up.
+	stampAfterList int
 	// listN counts PaneList calls; beforeList runs at the start of the listN'th
-	// call, so a test can mutate the world between two reads the way a
-	// concurrent `pasture ensure` process would.
+	// call, so a test can inspect or mutate the world between two reads the way
+	// a concurrent `pasture ensure` process would.
 	listN      int
 	beforeList func(f *fakeClient, n int)
 }
@@ -44,7 +52,10 @@ func (f *fakeClient) PaneList() ([]snapshot.Pane, error) {
 	if f.beforeList != nil {
 		f.beforeList(f, f.listN)
 	}
-	if f.stampTokenOnList {
+	if err := f.errs["list"]; err != nil {
+		return nil, err
+	}
+	if f.stampAfterList > 0 && f.listN >= f.stampAfterList {
 		for i := range f.panes {
 			if f.panes[i].PaneID == f.nextID {
 				f.panes[i].Tokens = map[string]string{Token: "1"}
@@ -54,10 +65,18 @@ func (f *fakeClient) PaneList() ([]snapshot.Pane, error) {
 	return append([]snapshot.Pane(nil), f.panes...), nil
 }
 
-func (f *fakeClient) Layout(paneID string) (snapshot.Layout, error) { return f.layout, nil }
+func (f *fakeClient) Layout(paneID string) (snapshot.Layout, error) {
+	if err := f.errs["layout"]; err != nil {
+		return snapshot.Layout{}, err
+	}
+	return f.layout, nil
+}
 
 func (f *fakeClient) Split(paneID string, ratio float64, cwd string, env map[string]string) (string, error) {
 	f.rec("split", paneID, strconv.FormatFloat(ratio, 'f', 2, 64), cwd)
+	if err := f.errs["split"]; err != nil {
+		return "", err
+	}
 	tab := ""
 	for _, p := range f.panes {
 		if p.PaneID == paneID {
@@ -68,15 +87,36 @@ func (f *fakeClient) Split(paneID string, ratio float64, cwd string, env map[str
 	return f.nextID, nil
 }
 
-func (f *fakeClient) Swap(source, target string) error { f.rec("swap", source, target); return nil }
+func (f *fakeClient) Swap(source, target string) error {
+	f.rec("swap", source, target)
+	return f.errs["swap"]
+}
+
 func (f *fakeClient) RunInPane(paneID, command string) error {
 	f.rec("run", paneID, command)
+	return f.errs["run"]
+}
+
+// Rename records the call and, like herdr, actually labels the pane, so a pane
+// abandoned after Rename is a reapable corpse in later reads.
+func (f *fakeClient) Rename(paneID, label string) error {
+	f.rec("rename", paneID, label)
+	if err := f.errs["rename"]; err != nil {
+		return err
+	}
+	for i := range f.panes {
+		if f.panes[i].PaneID == paneID {
+			f.panes[i].Label = label
+		}
+	}
 	return nil
 }
-func (f *fakeClient) Rename(paneID, label string) error { f.rec("rename", paneID, label); return nil }
 
 func (f *fakeClient) Close(paneID string) error {
 	f.rec("close", paneID)
+	if err := f.errs["close"]; err != nil {
+		return err
+	}
 	kept := f.panes[:0]
 	for _, p := range f.panes {
 		if p.PaneID != paneID {
@@ -85,6 +125,15 @@ func (f *fakeClient) Close(paneID string) error {
 	}
 	f.panes = kept
 	return nil
+}
+
+func (f *fakeClient) has(paneID string) bool {
+	for _, p := range f.panes {
+		if p.PaneID == paneID {
+			return true
+		}
+	}
+	return false
 }
 
 func names(calls []call) []string {
@@ -118,7 +167,7 @@ func oneTab() *fakeClient {
 			{PaneID: "w1:p2", Rect: snapshot.Rect{X: 100, Y: 1, Width: 100, Height: 40}},
 			{PaneID: "w1:p1", Rect: snapshot.Rect{X: 0, Y: 1, Width: 100, Height: 40}},
 		}},
-		stampTokenOnList: true,
+		stampAfterList: 1,
 	}
 }
 
@@ -135,12 +184,17 @@ func deps(t *testing.T, c *fakeClient) Deps {
 	}
 }
 
+// lockDir is the lock the dock takes for the one tab the fixtures use.
+func lockDir(d Deps) string { return filepath.Join(d.StateDir, "ensure.w1_t1.lock") }
+
 func TestEnsureOpensDockOnLeftOfLeftmostPane(t *testing.T) {
 	c := oneTab()
 	if err := Ensure(deps(t, c), "w1:t1"); err != nil {
 		t.Fatal(err)
 	}
-	want := []string{"split", "swap", "run", "rename"}
+	// Rename comes second so that a failure in any later step leaves a labelled
+	// pane the next Ensure can recognise and reap.
+	want := []string{"split", "rename", "swap", "run"}
 	if !equal(names(c.calls), want) {
 		t.Fatalf("calls = %v, want %v", names(c.calls), want)
 	}
@@ -156,14 +210,14 @@ func TestEnsureOpensDockOnLeftOfLeftmostPane(t *testing.T) {
 	if c.calls[0].Args[2] != "/r" {
 		t.Fatalf("split cwd = %q, want the anchor pane's cwd %q", c.calls[0].Args[2], "/r")
 	}
-	if c.calls[1].Args[0] != "w1:p9" || c.calls[1].Args[1] != "w1:p1" {
-		t.Fatalf("swap args = %v", c.calls[1].Args)
+	if c.calls[1].Args[0] != "w1:p9" || c.calls[1].Args[1] != Label {
+		t.Fatalf("rename args = %v", c.calls[1].Args)
 	}
-	if c.calls[2].Args[1] != "'/opt/pasture' ui" {
-		t.Fatalf("run command = %q", c.calls[2].Args[1])
+	if c.calls[2].Args[0] != "w1:p9" || c.calls[2].Args[1] != "w1:p1" {
+		t.Fatalf("swap args = %v", c.calls[2].Args)
 	}
-	if c.calls[3].Args[1] != Label {
-		t.Fatalf("rename label = %q", c.calls[3].Args[1])
+	if c.calls[3].Args[1] != "'/opt/pasture' ui" {
+		t.Fatalf("run command = %q", c.calls[3].Args[1])
 	}
 }
 
@@ -178,13 +232,28 @@ func TestEnsureNoopWhenLiveDockExists(t *testing.T) {
 	}
 }
 
+// A dock in another tab is not this tab's dock, however live it looks.
+func TestEnsureIgnoresLiveDockInAnotherTab(t *testing.T) {
+	c := oneTab()
+	c.panes = append(c.panes, snapshot.Pane{PaneID: "w2:p5", TabID: "w2:t1", Label: Label, Tokens: map[string]string{Token: "77"}})
+	if live, corpses := classify(c.panes, "w1:t1"); live != "" || corpses != nil {
+		t.Fatalf("classify(w1:t1) = %q, %v; another tab's dock must not count", live, corpses)
+	}
+	if err := Ensure(deps(t, c), "w1:t1"); err != nil {
+		t.Fatal(err)
+	}
+	if !equal(names(c.calls), []string{"split", "rename", "swap", "run"}) {
+		t.Fatalf("calls = %v, want this tab to get its own dock", names(c.calls))
+	}
+}
+
 func TestEnsureReplacesCorpse(t *testing.T) {
 	c := oneTab()
 	c.panes = append(c.panes, snapshot.Pane{PaneID: "w1:p5", TabID: "w1:t1", Label: Label})
 	if err := Ensure(deps(t, c), "w1:t1"); err != nil {
 		t.Fatal(err)
 	}
-	want := []string{"close", "split", "swap", "run", "rename"}
+	want := []string{"close", "split", "rename", "swap", "run"}
 	if !equal(names(c.calls), want) || c.calls[0].Args[0] != "w1:p5" {
 		t.Fatalf("calls = %v", c.calls)
 	}
@@ -216,6 +285,10 @@ func TestEnsureRespectsSnooze(t *testing.T) {
 	}
 	if len(c.calls) != 0 {
 		t.Fatalf("expected no calls, got %v", names(c.calls))
+	}
+	// A snoozed tab must not even contend for the lock.
+	if c.listN != 0 {
+		t.Fatalf("PaneList called %d time(s); a snoozed tab should be settled from disk alone", c.listN)
 	}
 }
 
@@ -257,10 +330,34 @@ func TestEnsureDecidesFromPaneListReadUnderTheLock(t *testing.T) {
 	}
 }
 
+// The invariant behind the fix above: with the tab known up front, every single
+// pane list Ensure takes is read while holding that tab's lock.
+func TestEnsureReadsEveryPaneListUnderTheLock(t *testing.T) {
+	c := oneTab()
+	d := deps(t, c)
+	lock := lockDir(d)
+	var held []bool
+	c.beforeList = func(f *fakeClient, n int) {
+		_, err := os.Stat(lock)
+		held = append(held, err == nil)
+	}
+	if err := Ensure(d, "w1:t1"); err != nil {
+		t.Fatal(err)
+	}
+	if len(held) == 0 {
+		t.Fatal("PaneList was never called")
+	}
+	for i, ok := range held {
+		if !ok {
+			t.Fatalf("PaneList call %d of %d ran without %s held", i+1, len(held), lock)
+		}
+	}
+}
+
 func TestEnsureSkipsWhenLocked(t *testing.T) {
 	c := oneTab()
 	d := deps(t, c)
-	if err := os.Mkdir(filepath.Join(d.StateDir, "ensure.lock"), 0o755); err != nil {
+	if err := os.Mkdir(lockDir(d), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	if err := Ensure(d, "w1:t1"); err != nil {
@@ -269,15 +366,41 @@ func TestEnsureSkipsWhenLocked(t *testing.T) {
 	if len(c.calls) != 0 {
 		t.Fatalf("expected no calls under lock, got %v", names(c.calls))
 	}
-	if _, err := os.Stat(filepath.Join(d.StateDir, "ensure.lock")); err != nil {
+	if _, err := os.Stat(lockDir(d)); err != nil {
 		t.Fatalf("a fresh lock held by someone else must survive: %v", err)
+	}
+}
+
+// The lock is per tab: a dock being built in one tab can hold its lock for
+// seconds, and must not drop another tab's ensure on the floor.
+func TestEnsureLocksPerTabNotGlobally(t *testing.T) {
+	c := oneTab()
+	c.panes = append(c.panes,
+		snapshot.Pane{PaneID: "w1:p3", TabID: "w1:t2", WorkspaceID: "w1", Cwd: "/r"},
+	)
+	c.layout = snapshot.Layout{TabID: "w1:t2", Panes: []snapshot.LayoutPane{
+		{PaneID: "w1:p3", Rect: snapshot.Rect{X: 0, Y: 1, Width: 200, Height: 40}},
+	}}
+	d := deps(t, c)
+	// Tab w1:t1 is mid-build elsewhere.
+	if err := os.Mkdir(lockDir(d), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := Ensure(d, "w1:t2"); err != nil {
+		t.Fatal(err)
+	}
+	if !equal(names(c.calls), []string{"split", "rename", "swap", "run"}) {
+		t.Fatalf("calls = %v; another tab's lock must not block this one", names(c.calls))
+	}
+	if c.calls[0].Args[0] != "w1:p3" {
+		t.Fatalf("split anchor = %v, want the pane of tab w1:t2", c.calls[0].Args)
 	}
 }
 
 func TestEnsureStealsStaleLock(t *testing.T) {
 	c := oneTab()
 	d := deps(t, c)
-	if err := os.Mkdir(filepath.Join(d.StateDir, "ensure.lock"), 0o755); err != nil {
+	if err := os.Mkdir(lockDir(d), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	d.Now = func() time.Time { return time.Now().Add(2 * time.Minute) }
@@ -287,8 +410,157 @@ func TestEnsureStealsStaleLock(t *testing.T) {
 	if len(c.calls) == 0 {
 		t.Fatal("stale lock should have been stolen")
 	}
-	if _, err := os.Stat(filepath.Join(d.StateDir, "ensure.lock")); err == nil {
+	if _, err := os.Stat(lockDir(d)); err == nil {
 		t.Fatal("lock should be released after Ensure")
+	}
+}
+
+// A holder that was declared stale and stolen from must not delete the thief's
+// lock on its way out, or a third process could acquire it mid-split.
+func TestReleaseLeavesALockItNoLongerOwns(t *testing.T) {
+	d := deps(t, oneTab())
+	release, ok := acquireLock(d, "w1:t1")
+	if !ok {
+		t.Fatal("first acquire failed")
+	}
+	// A second process decides the lock is stale and takes it over.
+	thief := deps(t, oneTab())
+	thief.StateDir = d.StateDir
+	thief.Now = func() time.Time { return time.Now().Add(2 * time.Minute) }
+	thiefRelease, ok := acquireLock(thief, "w1:t1")
+	if !ok {
+		t.Fatal("stale lock should have been stealable")
+	}
+	release() // the slow original finally finishes
+	if _, err := os.Stat(lockDir(d)); err != nil {
+		t.Fatalf("the thief still holds the lock, it must survive the original's release: %v", err)
+	}
+	thiefRelease()
+	if _, err := os.Stat(lockDir(d)); err == nil {
+		t.Fatal("the owner's release should have removed the lock")
+	}
+}
+
+// A tab id that looks like a path must not let a lock or snooze file escape the
+// state dir.
+func TestTabKeyCannotEscapeTheStateDir(t *testing.T) {
+	d := deps(t, oneTab())
+	state := filepath.Clean(d.StateDir)
+	snoozeDir := filepath.Join(state, "snooze")
+	for _, tabID := range []string{"w1:t1", "../../etc/passwd", "..", ".", "/", "a/b/c", "", "w1:t1/../../x"} {
+		if key := tabKey(tabID); key == "." || key == ".." || strings.ContainsRune(key, filepath.Separator) {
+			t.Fatalf("tabKey(%q) = %q, not a safe single component", tabID, key)
+		}
+		if got := filepath.Dir(filepath.Clean(lockPath(d, tabID))); got != state {
+			t.Fatalf("lockPath(%q) sits in %q, want %q", tabID, got, state)
+		}
+		if got := filepath.Dir(filepath.Clean(snoozePath(d, tabID))); got != snoozeDir {
+			t.Fatalf("snoozePath(%q) sits in %q, want %q", tabID, got, snoozeDir)
+		}
+	}
+	// The happy path keeps the readable name the rest of the tests rely on.
+	if got := tabKey("w1:t1"); got != "w1_t1" {
+		t.Fatalf("tabKey(\"w1:t1\") = %q, want %q", got, "w1_t1")
+	}
+}
+
+// A pane that exists but is not yet labelled is invisible to isPasture, so
+// anything that goes wrong after Split must close the pane rather than strand
+// an orphan that no later Ensure would ever reap.
+func TestEnsureClosesTheNewPaneWhenSwapFails(t *testing.T) {
+	c := oneTab()
+	boom := errors.New("swap exploded")
+	c.errs = map[string]error{"swap": boom}
+	err := Ensure(deps(t, c), "w1:t1")
+	if !errors.Is(err, boom) {
+		t.Fatalf("Ensure err = %v, want %v", err, boom)
+	}
+	if !equal(names(c.calls), []string{"split", "rename", "swap", "close"}) {
+		t.Fatalf("calls = %v", names(c.calls))
+	}
+	if c.calls[3].Args[0] != "w1:p9" {
+		t.Fatalf("closed %q, want the half-built pane w1:p9", c.calls[3].Args[0])
+	}
+	if c.has("w1:p9") {
+		t.Fatal("the half-built pane was left behind")
+	}
+}
+
+func TestEnsureClosesTheNewPaneWhenRunFails(t *testing.T) {
+	c := oneTab()
+	boom := errors.New("run exploded")
+	c.errs = map[string]error{"run": boom}
+	err := Ensure(deps(t, c), "w1:t1")
+	if !errors.Is(err, boom) {
+		t.Fatalf("Ensure err = %v, want %v", err, boom)
+	}
+	if !equal(names(c.calls), []string{"split", "rename", "swap", "run", "close"}) {
+		t.Fatalf("calls = %v", names(c.calls))
+	}
+	if c.has("w1:p9") {
+		t.Fatal("the half-built pane was left behind")
+	}
+}
+
+// Layout is how we know which pane is on the left edge; without it a dock would
+// land somewhere arbitrary, which is worse than waiting for the next event.
+func TestEnsureSkipsWhenLayoutUnavailable(t *testing.T) {
+	c := oneTab()
+	c.errs = map[string]error{"layout": errors.New("no layout")}
+	var log bytes.Buffer
+	d := deps(t, c)
+	d.Log = &log
+	if err := Ensure(d, "w1:t1"); err != nil {
+		t.Fatal(err)
+	}
+	if len(c.calls) != 0 {
+		t.Fatalf("expected no calls without a layout, got %v", names(c.calls))
+	}
+	if !strings.Contains(log.String(), "layout of tab w1:t1 unavailable") {
+		t.Fatalf("the skip must be logged, log = %q", log.String())
+	}
+}
+
+// One sleep before each token check and none after the last.
+func TestEnsureSleepsBeforeEachTokenCheck(t *testing.T) {
+	c := oneTab()
+	c.stampAfterList = 3 // the UI stamps itself only by the third pane list
+	d := deps(t, c)
+	sleeps := 0
+	d.Sleep = func(time.Duration) { sleeps++ }
+	if err := Ensure(d, "w1:t1"); err != nil {
+		t.Fatal(err)
+	}
+	if sleeps != 2 {
+		t.Fatalf("sleeps = %d, want 2 (one before each check, none after the successful one)", sleeps)
+	}
+}
+
+func TestEnsureGivesUpWhenTokenNeverStampedAndLeavesAReapablePane(t *testing.T) {
+	c := oneTab()
+	c.stampAfterList = 0 // the UI never comes up
+	d := deps(t, c)
+	var log bytes.Buffer
+	d.Log = &log
+	sleeps := 0
+	d.Sleep = func(time.Duration) { sleeps++ }
+	if err := Ensure(d, "w1:t1"); err != nil {
+		t.Fatal(err)
+	}
+	if sleeps != tokenRetries {
+		t.Fatalf("sleeps = %d, want the full bound of %d", sleeps, tokenRetries)
+	}
+	if !strings.Contains(log.String(), "never stamped") {
+		t.Fatalf("giving up must be logged, log = %q", log.String())
+	}
+	// The pane was labelled before the wait, so the next ensure reaps it
+	// instead of splitting a second one beside it.
+	c.calls = nil
+	if err := Ensure(d, "w1:t1"); err != nil {
+		t.Fatal(err)
+	}
+	if len(c.calls) == 0 || c.calls[0].Name != "close" || c.calls[0].Args[0] != "w1:p9" {
+		t.Fatalf("calls = %v, want the abandoned pane reaped first", c.calls)
 	}
 }
 
@@ -307,6 +579,47 @@ func TestToggleClosesLiveDockAndSnoozes(t *testing.T) {
 	}
 }
 
+// Closing and snoozing must not race an in-flight Ensure, or the tab ends up
+// both docked and snoozed: the opposite of what the user pressed.
+func TestToggleHoldsTheLockAcrossTheCloseBranch(t *testing.T) {
+	c := oneTab()
+	c.panes = append(c.panes, snapshot.Pane{PaneID: "w1:p5", TabID: "w1:t1", Label: Label, Tokens: map[string]string{Token: "77"}})
+	d := deps(t, c)
+	lock := lockDir(d)
+	var held []bool
+	c.beforeList = func(f *fakeClient, n int) {
+		_, err := os.Stat(lock)
+		held = append(held, err == nil)
+	}
+	if err := Toggle(d, "w1:t1"); err != nil {
+		t.Fatal(err)
+	}
+	if len(held) == 0 || !held[0] {
+		t.Fatalf("the deciding pane list ran without the lock held (held = %v)", held)
+	}
+	if _, err := os.Stat(lock); err == nil {
+		t.Fatal("Toggle should release the lock")
+	}
+}
+
+func TestToggleReportsABusyTab(t *testing.T) {
+	c := oneTab()
+	d := deps(t, c)
+	if err := os.Mkdir(lockDir(d), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	err := Toggle(d, "w1:t1")
+	if err == nil {
+		t.Fatal("a toggle that cannot run must say so, not fail silently")
+	}
+	if !strings.Contains(err.Error(), "w1:t1") {
+		t.Fatalf("err = %v, want it to name the tab", err)
+	}
+	if len(c.calls) != 0 {
+		t.Fatalf("expected no calls, got %v", names(c.calls))
+	}
+}
+
 func TestToggleOpensAndClearsSnooze(t *testing.T) {
 	c := oneTab()
 	d := deps(t, c)
@@ -319,11 +632,24 @@ func TestToggleOpensAndClearsSnooze(t *testing.T) {
 	if err := Toggle(d, "w1:t1"); err != nil {
 		t.Fatal(err)
 	}
-	if !equal(names(c.calls), []string{"split", "swap", "run", "rename"}) {
+	if !equal(names(c.calls), []string{"split", "rename", "swap", "run"}) {
 		t.Fatalf("calls = %v", names(c.calls))
 	}
 	if _, err := os.Stat(filepath.Join(d.StateDir, "snooze", "w1_t1")); err == nil {
 		t.Fatal("snooze file should be removed")
+	}
+}
+
+// auto_open governs automatic docking only; an explicit toggle must still work.
+func TestToggleOpensEvenWithAutoOpenOff(t *testing.T) {
+	c := oneTab()
+	d := deps(t, c)
+	d.Cfg.AutoOpen = false
+	if err := Toggle(d, "w1:t1"); err != nil {
+		t.Fatal(err)
+	}
+	if !equal(names(c.calls), []string{"split", "rename", "swap", "run"}) {
+		t.Fatalf("calls = %v", names(c.calls))
 	}
 }
 
@@ -348,5 +674,57 @@ func TestRedeployClosesAllDocksAndClearsSnooze(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(d.StateDir, "snooze")); err == nil {
 		t.Fatal("snooze dir should be removed")
+	}
+	if _, err := os.Stat(lockDir(d)); err == nil {
+		t.Fatal("Redeploy should release the locks it took")
+	}
+}
+
+// A pane another process is still building must not be closed by Redeploy: it
+// would come back live on the old binary, which is what redeploy exists to
+// prevent.
+func TestRedeployLeavesBusyTabsAloneAndSaysSo(t *testing.T) {
+	c := oneTab()
+	c.panes = append(c.panes,
+		snapshot.Pane{PaneID: "w1:p5", TabID: "w1:t1", Label: Label, Tokens: map[string]string{Token: "77"}},
+		snapshot.Pane{PaneID: "w2:p3", TabID: "w2:t1", Label: Label},
+	)
+	d := deps(t, c)
+	if err := os.Mkdir(lockDir(d), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	err := Redeploy(d)
+	if err == nil || !strings.Contains(err.Error(), "w1:t1") {
+		t.Fatalf("err = %v, want it to name the skipped tab w1:t1", err)
+	}
+	if !equal(names(c.calls), []string{"close"}) || c.calls[0].Args[0] != "w2:p3" {
+		t.Fatalf("calls = %v, want only the idle tab's pane closed", c.calls)
+	}
+}
+
+func TestShellQuote(t *testing.T) {
+	for _, tc := range []struct{ in, want string }{
+		{"/opt/pasture", "'/opt/pasture'"},
+		{"/Applications/My Tools/pasture", "'/Applications/My Tools/pasture'"},
+		{"/home/o'brien/bin/pasture", `'/home/o'\''brien/bin/pasture'`},
+		{"/tmp/it's here/pasture", `'/tmp/it'\''s here/pasture'`},
+	} {
+		if got := shellQuote(tc.in); got != tc.want {
+			t.Errorf("shellQuote(%q) = %q, want %q", tc.in, got, tc.want)
+		}
+	}
+}
+
+// Nothing should panic when a caller leaves the optional hooks nil.
+func TestNilNowAndSleepDoNotPanic(t *testing.T) {
+	c := oneTab()
+	d := deps(t, c)
+	d.Now = nil
+	d.Sleep = nil
+	if err := Ensure(d, "w1:t1"); err != nil {
+		t.Fatal(err)
+	}
+	if len(c.calls) == 0 {
+		t.Fatalf("calls = %v, want the dock to be built", names(c.calls))
 	}
 }
