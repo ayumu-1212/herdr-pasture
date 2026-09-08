@@ -201,3 +201,134 @@ func TestBuildMarksAgentRows(t *testing.T) {
 		t.Fatalf("Kind = %v, want RowAgent", gs[0].Rows[0].Kind)
 	}
 }
+
+func TestBuildAddsARowForAWorkspaceWithNoAgent(t *testing.T) {
+	s := snapshot.Snapshot{
+		Workspaces: []snapshot.Workspace{
+			{WorkspaceID: "w1", Number: 1, Label: "a"},
+			{WorkspaceID: "w2", Number: 2, Label: "bare"},
+		},
+		Panes: []snapshot.Pane{
+			pane("w1:p1", "w1", "/r/a", "claude", "idle", "one"),
+			pane("w2:p1", "w2", "/r/b", "", "", ""),
+		},
+	}
+	gs := Build(s, mapResolver{"/r/a": {Root: "/r/a"}, "/r/b": {Root: "/r/b"}}, Options{})
+	if len(gs) != 2 {
+		t.Fatalf("want 2 groups, got %v", labelsOf(gs))
+	}
+	var bare *Row
+	for i := range gs {
+		for j := range gs[i].Rows {
+			if gs[i].Rows[j].Kind == RowWorkspace {
+				bare = &gs[i].Rows[j]
+			}
+		}
+	}
+	if bare == nil {
+		t.Fatal("no RowWorkspace produced")
+	}
+	if bare.WorkspaceID != "w2" || bare.Title != "bare" || bare.WorkspaceNumber != 2 {
+		t.Fatalf("row = %+v", *bare)
+	}
+	if bare.PaneID != "" || bare.Agent != "" {
+		t.Fatalf("a workspace row carries no pane or agent: %+v", *bare)
+	}
+}
+
+func TestBuildOmitsTheWorkspaceRowWhenAnAgentExists(t *testing.T) {
+	s := snapshot.Snapshot{
+		Workspaces: []snapshot.Workspace{{WorkspaceID: "w1", Number: 1, Label: "a"}},
+		Panes: []snapshot.Pane{
+			pane("w1:p1", "w1", "/r/a", "claude", "idle", "one"),
+			pane("w1:p2", "w1", "/r/a", "", "", ""),
+		},
+	}
+	gs := Build(s, mapResolver{"/r/a": {Root: "/r/a"}}, Options{})
+	if len(gs) != 1 || len(gs[0].Rows) != 1 || gs[0].Rows[0].Kind != RowAgent {
+		t.Fatalf("got %+v", gs)
+	}
+}
+
+func TestBuildTakesTheWorkspaceCwdFromTheLowestPane(t *testing.T) {
+	s := snapshot.Snapshot{
+		Workspaces: []snapshot.Workspace{{WorkspaceID: "w1", Number: 1, Label: "w"}},
+		Panes: []snapshot.Pane{
+			pane("w1:p7", "w1", "/r/late", "", "", ""),
+			pane("w1:p2", "w1", "/r/early", "", "", ""),
+		},
+	}
+	gs := Build(s, mapResolver{"/r/late": {Root: "/r/late"}, "/r/early": {Root: "/r/early"}}, Options{})
+	if len(gs) != 1 || gs[0].Key != "/r/early" {
+		t.Fatalf("want the lowest-numbered pane's cwd, got %v", labelsOf(gs))
+	}
+}
+
+func TestBuildIgnoresOwnPanesWhenPickingTheWorkspaceCwd(t *testing.T) {
+	own := pane("w1:p1", "w1", "/r/pasture", "", "", "")
+	own.Tokens = map[string]string{"pasture": "1"}
+	s := snapshot.Snapshot{
+		Workspaces: []snapshot.Workspace{{WorkspaceID: "w1", Number: 1, Label: "w"}},
+		Panes:      []snapshot.Pane{own, pane("w1:p2", "w1", "/r/real", "", "", "")},
+	}
+	gs := Build(s, mapResolver{"/r/pasture": {Root: "/r/pasture"}, "/r/real": {Root: "/r/real"}},
+		Options{SelfToken: "pasture"})
+	if len(gs) != 1 || gs[0].Key != "/r/real" {
+		t.Fatalf("got %v", labelsOf(gs))
+	}
+}
+
+func TestBuildExcludeAppliesToWorkspaceRows(t *testing.T) {
+	s := snapshot.Snapshot{
+		Workspaces: []snapshot.Workspace{{WorkspaceID: "w1", Number: 1, Label: "w"}},
+		Panes:      []snapshot.Pane{pane("w1:p1", "w1", "/tmp/x", "", "", "")},
+	}
+	gs := Build(s, mapResolver{"/tmp/x": {Root: "/tmp/x"}},
+		Options{Exclude: func(cwd string) bool { return cwd == "/tmp/x" }})
+	if len(gs) != 0 {
+		t.Fatalf("want no groups, got %v", labelsOf(gs))
+	}
+}
+
+func TestBuildWorkspaceRowFallsBackToTheWorkspaceID(t *testing.T) {
+	s := snapshot.Snapshot{
+		Workspaces: []snapshot.Workspace{{WorkspaceID: "w1", Number: 1, Label: ""}},
+		Panes:      []snapshot.Pane{pane("w1:p1", "w1", "/r/a", "", "", "")},
+	}
+	gs := Build(s, mapResolver{"/r/a": {Root: "/r/a"}}, Options{})
+	if len(gs) != 1 || gs[0].Rows[0].Title != "w1" {
+		t.Fatalf("got %+v", gs)
+	}
+}
+
+func TestBuildMarksTheFocusedWorkspaceRow(t *testing.T) {
+	s := snapshot.Snapshot{
+		FocusedWorkspaceID: "w1",
+		Workspaces:         []snapshot.Workspace{{WorkspaceID: "w1", Number: 1, Label: "w"}},
+		Panes:              []snapshot.Pane{pane("w1:p1", "w1", "/r/a", "", "", "")},
+	}
+	gs := Build(s, mapResolver{"/r/a": {Root: "/r/a"}}, Options{})
+	if len(gs) != 1 || !gs[0].Rows[0].Focused {
+		t.Fatalf("focused flag not set: %+v", gs)
+	}
+}
+
+func TestBuildOrdersAgentAndWorkspaceRowsDeterministically(t *testing.T) {
+	s := snapshot.Snapshot{
+		Workspaces: []snapshot.Workspace{
+			{WorkspaceID: "w1", Number: 1, Label: "one"},
+			{WorkspaceID: "w2", Number: 2, Label: "two"},
+		},
+		Panes: []snapshot.Pane{
+			pane("w2:p1", "w2", "/r", "", "", ""),
+			pane("w1:p1", "w1", "/r", "claude", "idle", "agent"),
+		},
+	}
+	gs := Build(s, mapResolver{"/r": {Root: "/r"}}, Options{})
+	if len(gs) != 1 || len(gs[0].Rows) != 2 {
+		t.Fatalf("got %+v", gs)
+	}
+	if gs[0].Rows[0].Kind != RowAgent || gs[0].Rows[1].Kind != RowWorkspace {
+		t.Fatalf("workspace 1's agent must sort before workspace 2's row: %+v", gs[0].Rows)
+	}
+}
