@@ -114,9 +114,14 @@ func open(d Deps, panes []snapshot.Pane, tabID string) error {
 		"HERDR_PLUGIN_STATE_DIR":  d.StateDir,
 		"HERDR_PLUGIN_CONFIG_DIR": config.Dir(),
 	}
-	// herdr's --ratio is the share kept by the pane being split, and the dock
-	// is the new pane, so the anchor keeps everything the dock does not want.
-	newID, err := d.Client.Split(anchor.PaneID, 1-d.Cfg.WidthRatio, anchor.Cwd, env)
+	// WidthRatio goes to --ratio unchanged. Verified against herdr 0.8.0:
+	// --ratio is the share kept by the ORIGINAL pane (split w1:p1 --ratio 0.25
+	// leaves w1:p1 at 26% and puts the new w1:p2 at 74% on the right), and
+	// `pane swap` exchanges the two panes' POSITIONS while each slot keeps its
+	// size (after the swap w1:p2 sits in the 26% left slot). So splitting with
+	// WidthRatio and swapping the new pane leftwards lands the dock in a slot
+	// exactly WidthRatio wide. Do not "fix" this to 1-WidthRatio.
+	newID, err := d.Client.Split(anchor.PaneID, d.Cfg.WidthRatio, anchor.Cwd, env)
 	if err != nil {
 		return err
 	}

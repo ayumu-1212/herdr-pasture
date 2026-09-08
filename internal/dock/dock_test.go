@@ -138,10 +138,11 @@ func TestEnsureOpensDockOnLeftOfLeftmostPane(t *testing.T) {
 	if c.calls[0].Args[0] != "w1:p1" {
 		t.Fatalf("should split the leftmost pane, split %v", c.calls[0].Args)
 	}
-	// --ratio is the share kept by the ORIGINAL pane and the dock is the new
-	// pane, so a width_ratio of 0.25 must leave 0.75 with the anchor.
-	if c.calls[0].Args[1] != "0.75" {
-		t.Fatalf("split ratio = %q, want %q (1 - width_ratio)", c.calls[0].Args[1], "0.75")
+	// --ratio is the share kept by the ORIGINAL pane, but `pane swap` moves the
+	// dock into that same left slot without resizing it, so width_ratio goes
+	// through unchanged and the dock ends up width_ratio wide.
+	if c.calls[0].Args[1] != "0.25" {
+		t.Fatalf("split ratio = %q, want %q (width_ratio, unchanged)", c.calls[0].Args[1], "0.25")
 	}
 	if c.calls[0].Args[2] != "/r" {
 		t.Fatalf("split cwd = %q, want the anchor pane's cwd %q", c.calls[0].Args[2], "/r")
