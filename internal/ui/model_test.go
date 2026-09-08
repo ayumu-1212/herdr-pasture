@@ -12,11 +12,29 @@ import (
 )
 
 type fakeFetcher struct {
-	snap      snapshot.Snapshot
-	err       error
-	focused   []string
-	focusedWS []string
-	snapshots int
+	snap        snapshot.Snapshot
+	err         error
+	focused     []string
+	focusedWS   []string
+	focusedTabs []string
+	order       string
+	snapshots   int
+}
+
+func (f *fakeFetcher) FocusTab(id string) error {
+	f.focusedTabs = append(f.focusedTabs, id)
+	f.note("tab")
+	return nil
+}
+
+// note records the order the focus calls arrive in, so a test can pin that
+// the tab is focused before the pane rather than after it.
+func (f *fakeFetcher) note(what string) {
+	if f.order == "" {
+		f.order = what
+		return
+	}
+	f.order += "," + what
 }
 
 func (f *fakeFetcher) Snapshot() (snapshot.Snapshot, error) {
@@ -25,6 +43,7 @@ func (f *fakeFetcher) Snapshot() (snapshot.Snapshot, error) {
 }
 func (f *fakeFetcher) FocusAgent(id string) error {
 	f.focused = append(f.focused, id)
+	f.note("agent")
 	return nil
 }
 
@@ -151,6 +170,7 @@ func (c *countingFetcher) Snapshot() (snapshot.Snapshot, error) {
 }
 func (c *countingFetcher) FocusAgent(string) error     { return nil }
 func (c *countingFetcher) FocusWorkspace(string) error { return nil }
+func (c *countingFetcher) FocusTab(string) error       { return nil }
 
 // TestRefreshKeepsExactlyOnePollChain drives the model the way bubbletea's
 // event loop does — run every pending cmd, feed the messages back — and counts
@@ -516,54 +536,6 @@ func TestHeaderWithAgentsStillCollapses(t *testing.T) {
 	}
 }
 
-// herdr decides whether to hand a click to the pane app from a per-pane
-// mouse_reporting flag, which in 0.9 is a snapshot replicated to the client.
-// bubbletea announces the mouse modes once at startup, so a single write that
-// is lost, missed by a surface patch, or reset (a live handoff writes
-// "\x1b[?1002l" before restoring) leaves herdr believing this app wants no
-// mouse, for good: clicks then only move herdr's focus. Re-announcing on every
-// poll costs two short escapes a second and heals that within one interval.
-func TestEachPollReassertsMouseReporting(t *testing.T) {
-	f := &fakeFetcher{}
-	m := New(f, mapResolver{}, group.Options{}, time.Second)
-	reasserted := 0
-	m.reassertMouse = func() tea.Msg {
-		reasserted++
-		return nil
-	}
-	m, _ = m.Update(tea.WindowSizeMsg{Width: 30, Height: 20})
-	_, cmd := m.Update(tickMsg{gen: m.gen})
-	if cmd == nil {
-		t.Fatal("a tick must return a command")
-	}
-	runAll(cmd)
-	if reasserted != 1 {
-		t.Fatalf("mouse reporting reasserted %d times, want 1", reasserted)
-	}
-	if f.snapshots != 1 {
-		t.Fatalf("the tick must still fetch: %d snapshots", f.snapshots)
-	}
-}
-
-// A tick from a retired chain must stay silent, mouse reassertion included.
-func TestAStaleTickReassertsNothing(t *testing.T) {
-	f := &fakeFetcher{}
-	m := New(f, mapResolver{}, group.Options{}, time.Second)
-	reasserted := 0
-	m.reassertMouse = func() tea.Msg {
-		reasserted++
-		return nil
-	}
-	m, _ = m.Update(tea.WindowSizeMsg{Width: 30, Height: 20})
-	_, cmd := m.Update(tickMsg{gen: m.gen + 1})
-	if cmd != nil {
-		runAll(cmd)
-	}
-	if reasserted != 0 {
-		t.Fatalf("a stale tick reasserted %d times", reasserted)
-	}
-}
-
 // runAll executes cmd, following one level of tea.Batch, so a test can observe
 // every command a single Update returned.
 func runAll(cmd tea.Cmd) {
@@ -603,4 +575,53 @@ func findSnapshotMsg(cmd tea.Cmd) (snapshotMsg, bool) {
 		}
 	}
 	return snapshotMsg{}, false
+}
+
+// A pane in another workspace needs the client's view moved to its tab first.
+// herdr 0.9 applies a request to the viewing client only for a fixed set of
+// navigation methods (src/server/headless/client_views.rs:328 onward):
+// WorkspaceFocus, TabFocus, PaneFocus and CommandInvoke. AgentFocus is not
+// among them, so on its own it moves the server's focus while the client keeps
+// looking at the workspace it was on, which is exactly "selecting a pane in
+// another workspace does nothing".
+func TestEnterOnAnAgentRowFocusesItsTabFirst(t *testing.T) {
+	f := &fakeFetcher{}
+	m := New(f, mapResolver{}, group.Options{}, time.Second)
+	m, _ = m.Update(tea.WindowSizeMsg{Width: 30, Height: 20})
+	m, _ = m.Update(snapshotMsg{gen: m.gen, groups: []group.Group{{
+		Key: "/r/a", Label: "a",
+		Rows: []group.Row{{Kind: group.RowAgent, PaneID: "w4:p1", TabID: "w4:t1", Title: "one"}},
+	}}})
+	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyDown})
+	_, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	drain(cmd)
+	if len(f.focusedTabs) != 1 || f.focusedTabs[0] != "w4:t1" {
+		t.Fatalf("focusedTabs = %v, want the pane's tab first", f.focusedTabs)
+	}
+	if len(f.focused) != 1 || f.focused[0] != "w4:p1" {
+		t.Fatalf("focused = %v", f.focused)
+	}
+	if f.order != "tab,agent" {
+		t.Fatalf("order = %q, want the tab before the agent", f.order)
+	}
+}
+
+// A row with no tab id (older snapshot, or a workspace row) must still focus.
+func TestEnterOnAnAgentRowWithoutATabStillFocusesThePane(t *testing.T) {
+	f := &fakeFetcher{}
+	m := New(f, mapResolver{}, group.Options{}, time.Second)
+	m, _ = m.Update(tea.WindowSizeMsg{Width: 30, Height: 20})
+	m, _ = m.Update(snapshotMsg{gen: m.gen, groups: []group.Group{{
+		Key: "/r/a", Label: "a",
+		Rows: []group.Row{{Kind: group.RowAgent, PaneID: "w4:p1", Title: "one"}},
+	}}})
+	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyDown})
+	_, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	drain(cmd)
+	if len(f.focusedTabs) != 0 {
+		t.Fatalf("no tab to focus, got %v", f.focusedTabs)
+	}
+	if len(f.focused) != 1 || f.focused[0] != "w4:p1" {
+		t.Fatalf("focused = %v", f.focused)
+	}
 }

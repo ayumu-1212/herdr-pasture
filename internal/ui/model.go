@@ -15,6 +15,7 @@ type Fetcher interface {
 	Snapshot() (snapshot.Snapshot, error)
 	FocusAgent(paneID string) error
 	FocusWorkspace(workspaceID string) error
+	FocusTab(tabID string) error
 }
 
 // Model is the bubbletea model. Copy semantics: Update returns a new value.
@@ -34,16 +35,6 @@ type Model struct {
 	// generation, so a manual refresh retires the chain already in flight
 	// instead of running a second one alongside it forever.
 	gen int
-
-	// reassertMouse re-announces the mouse modes to the terminal. herdr decides
-	// whether a click goes to this app from a per-pane flag it keeps for the
-	// pane's terminal, and in 0.9 that flag is a snapshot replicated to the
-	// client rather than read live. bubbletea announces the modes once at
-	// startup, so one write that is lost, missed by a surface patch, or reset
-	// (a live handoff writes "\x1b[?1002l" before restoring) leaves herdr
-	// believing this app wants no mouse for good, and clicks only move focus.
-	// A field rather than a direct call so tests can observe it.
-	reassertMouse tea.Cmd
 
 	groups       []group.Group
 	collapsed    map[string]bool
@@ -72,12 +63,11 @@ type tickMsg struct{ gen int }
 // New builds a model that polls fetch every interval.
 func New(f Fetcher, r group.Resolver, opt group.Options, interval time.Duration) Model {
 	return Model{
-		fetch:         f,
-		resolver:      r,
-		opt:           opt,
-		interval:      interval,
-		collapsed:     map[string]bool{},
-		reassertMouse: tea.EnableMouseCellMotion,
+		fetch:     f,
+		resolver:  r,
+		opt:       opt,
+		interval:  interval,
+		collapsed: map[string]bool{},
 	}
 }
 
@@ -125,11 +115,6 @@ func (m Model) Update(msg tea.Msg) (Model, tea.Cmd) {
 	case tickMsg:
 		if msg.gen != m.gen {
 			return m, nil // a retired chain's tick: let it die here
-		}
-		// The poll is also where the mouse modes are re-announced, so herdr's
-		// view of them can never stay wrong for longer than one interval.
-		if m.reassertMouse != nil {
-			return m, tea.Batch(m.fetchCmd(), m.reassertMouse)
 		}
 		return m, m.fetchCmd()
 	case tea.KeyMsg:
@@ -230,13 +215,20 @@ func soleWorkspace(g group.Group) (group.Row, bool) {
 // the command runs on its own goroutine and must not read the model.
 func focusCmd(fetch Fetcher, row group.Row) tea.Cmd {
 	return func() tea.Msg {
-		// A row that has vanished simply disappears on the next poll, so
-		// neither error is worth surfacing.
+		// A row that has vanished simply disappears on the next poll, so none
+		// of these errors is worth surfacing.
 		if row.Kind == group.RowWorkspace {
 			_ = fetch.FocusWorkspace(row.WorkspaceID)
-		} else {
-			_ = fetch.FocusAgent(row.PaneID)
+			return nil
 		}
+		// The tab first, then the pane inside it. Focusing an agent alone moves
+		// the server's focus but not the view of the client looking at the
+		// session, so a pane in another workspace would light up while the user
+		// went on staring at the workspace they were already on.
+		if row.TabID != "" {
+			_ = fetch.FocusTab(row.TabID)
+		}
+		_ = fetch.FocusAgent(row.PaneID)
 		return nil
 	}
 }

@@ -110,11 +110,11 @@ the next event rather than filling the plugin log with failed commands.
 | left click | focus that agent, or collapse/expand that header |
 | wheel | scroll the list |
 
-The pane re-announces its mouse modes on every poll. herdr decides whether a
-click reaches a pane app from a flag it keeps per pane, and in 0.9 that flag is
-a snapshot replicated to the client; announcing the modes once at startup, as
-most TUIs do, leaves the flag wrong for good if that one write is lost or reset,
-and clicks then only move herdr's focus.
+Activating an agent row focuses the pane's tab before the pane itself. herdr 0.9
+moves the client that is looking at the session only for a fixed set of
+navigation requests, and focusing an agent is not one of them: on its own it
+moves the server's focus while the client keeps looking at the workspace it was
+already on, so a pane in another workspace appeared to do nothing.
 
 ## Configuration
 
@@ -206,5 +206,4 @@ recovered in place by the `[[startup]]` hook.
 v0.3 was verified on 0.9.0 too: on a 120-column tab already split in half, the
 dock came out 30 columns, a quarter of the tab, where the old arithmetic gave
 15; a workspace-only group rendered its header without a chevron; and a
-synthetic click on that header moved the focused workspace. Capturing the pane's
-own output under a pty showed `?1002h` and `?1006h` re-announced once a second.
+synthetic click on that header moved the focused workspace.
