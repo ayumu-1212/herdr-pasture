@@ -23,12 +23,15 @@ const (
 	RowWorkspace
 )
 
-// Row is one agent pane as displayed in the list. TabID is intentionally
-// omitted: focusing (and the Focused field below) is keyed by pane id, not
-// tab id, so callers never need it.
+// Row is one agent pane as displayed in the list.
 type Row struct {
-	Kind            RowKind
-	PaneID          string
+	Kind   RowKind
+	PaneID string
+	// TabID is the pane's tab. Focusing an agent needs it: herdr 0.9 moves
+	// the viewing client only for a fixed set of navigation methods, and
+	// focusing an agent is not one of them, so a pane in another workspace
+	// needs its tab focused first or the client keeps looking elsewhere.
+	TabID           string
 	WorkspaceID     string
 	WorkspaceNumber int
 	Agent           string
@@ -136,6 +139,7 @@ func Build(s snapshot.Snapshot, r Resolver, opt Options) []Group {
 		g.Rows = append(g.Rows, Row{
 			Kind:            RowAgent,
 			PaneID:          p.PaneID,
+			TabID:           p.TabID,
 			WorkspaceID:     p.WorkspaceID,
 			WorkspaceNumber: number(p.WorkspaceID),
 			Agent:           p.Agent,

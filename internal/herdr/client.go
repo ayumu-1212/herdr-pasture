@@ -50,6 +50,17 @@ func (c *Client) FocusAgent(paneID string) error {
 	return err
 }
 
+// FocusTab moves the viewing client to tabID, across workspaces if need be.
+// herdr 0.9 applies a request to the client that is looking at the session only
+// for a fixed set of navigation methods; focusing an agent is not one of them,
+// so focusing a pane in another workspace moves the server's focus while the
+// client keeps looking at the workspace it was on. Focusing the tab first is
+// what actually takes the user there.
+func (c *Client) FocusTab(tabID string) error {
+	_, err := c.r.Run("tab", "focus", tabID)
+	return err
+}
+
 // FocusWorkspace focuses workspaceID, switching the UI to its active tab. It
 // is how a row for a workspace with no agent pane is activated.
 func (c *Client) FocusWorkspace(workspaceID string) error {

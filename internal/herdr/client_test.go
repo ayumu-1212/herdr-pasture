@@ -126,3 +126,14 @@ func TestSimpleCommandsArgv(t *testing.T) {
 		t.Fatalf("argv:\n got %v\nwant %v", r.Calls, want)
 	}
 }
+
+func TestFocusTabArgv(t *testing.T) {
+	r := &FakeRunner{}
+	if err := New(r).FocusTab("w4:t1"); err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"tab", "focus", "w4:t1"}
+	if !reflect.DeepEqual(r.Calls[0], want) {
+		t.Fatalf("argv = %v, want %v", r.Calls[0], want)
+	}
+}
