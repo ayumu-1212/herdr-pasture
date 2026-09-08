@@ -113,3 +113,20 @@ func TestViewLinesFitTheWidth(t *testing.T) {
 		}
 	}
 }
+
+func TestViewRendersAWorkspaceRow(t *testing.T) {
+	f := &fakeFetcher{}
+	m := New(f, mapResolver{}, group.Options{}, time.Second)
+	m, _ = m.Update(tea.WindowSizeMsg{Width: 30, Height: 10})
+	m, _ = m.Update(snapshotMsg{gen: m.gen, groups: []group.Group{{
+		Key: "/r/a", Label: "a",
+		Rows: []group.Row{{Kind: group.RowWorkspace, WorkspaceID: "w2", Title: "bare"}},
+	}}})
+	out := m.View()
+	if !strings.Contains(out, "bare") {
+		t.Fatalf("workspace label missing: %q", out)
+	}
+	if !strings.Contains(out, workspaceIcon) {
+		t.Fatalf("workspace icon missing: %q", out)
+	}
+}
