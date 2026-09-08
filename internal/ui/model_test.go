@@ -16,9 +16,13 @@ type fakeFetcher struct {
 	err       error
 	focused   []string
 	focusedWS []string
+	snapshots int
 }
 
-func (f *fakeFetcher) Snapshot() (snapshot.Snapshot, error) { return f.snap, f.err }
+func (f *fakeFetcher) Snapshot() (snapshot.Snapshot, error) {
+	f.snapshots++
+	return f.snap, f.err
+}
 func (f *fakeFetcher) FocusAgent(id string) error {
 	f.focused = append(f.focused, id)
 	return nil
@@ -261,9 +265,11 @@ func TestPollChainAlternatesSnapshotAndTick(t *testing.T) {
 	if cmd == nil {
 		t.Fatal("a tick must fetch")
 	}
-	snap, ok := cmd().(snapshotMsg)
+	// A tick now batches the fetch with the mouse-mode reassertion, so the
+	// snapshot is one of several commands rather than the only one.
+	snap, ok := findSnapshotMsg(cmd)
 	if !ok {
-		t.Fatalf("tick armed %T, want snapshotMsg", cmd())
+		t.Fatalf("tick armed no snapshotMsg")
 	}
 	if snap.gen != m.gen {
 		t.Fatalf("snapshot gen = %d, model gen = %d", snap.gen, m.gen)
@@ -508,4 +514,93 @@ func TestHeaderWithAgentsStillCollapses(t *testing.T) {
 	if len(f.focusedWS) != 0 || len(f.focused) != 0 {
 		t.Fatalf("nothing should be focused: ws=%v panes=%v", f.focusedWS, f.focused)
 	}
+}
+
+// herdr decides whether to hand a click to the pane app from a per-pane
+// mouse_reporting flag, which in 0.9 is a snapshot replicated to the client.
+// bubbletea announces the mouse modes once at startup, so a single write that
+// is lost, missed by a surface patch, or reset (a live handoff writes
+// "\x1b[?1002l" before restoring) leaves herdr believing this app wants no
+// mouse, for good: clicks then only move herdr's focus. Re-announcing on every
+// poll costs two short escapes a second and heals that within one interval.
+func TestEachPollReassertsMouseReporting(t *testing.T) {
+	f := &fakeFetcher{}
+	m := New(f, mapResolver{}, group.Options{}, time.Second)
+	reasserted := 0
+	m.reassertMouse = func() tea.Msg {
+		reasserted++
+		return nil
+	}
+	m, _ = m.Update(tea.WindowSizeMsg{Width: 30, Height: 20})
+	_, cmd := m.Update(tickMsg{gen: m.gen})
+	if cmd == nil {
+		t.Fatal("a tick must return a command")
+	}
+	runAll(cmd)
+	if reasserted != 1 {
+		t.Fatalf("mouse reporting reasserted %d times, want 1", reasserted)
+	}
+	if f.snapshots != 1 {
+		t.Fatalf("the tick must still fetch: %d snapshots", f.snapshots)
+	}
+}
+
+// A tick from a retired chain must stay silent, mouse reassertion included.
+func TestAStaleTickReassertsNothing(t *testing.T) {
+	f := &fakeFetcher{}
+	m := New(f, mapResolver{}, group.Options{}, time.Second)
+	reasserted := 0
+	m.reassertMouse = func() tea.Msg {
+		reasserted++
+		return nil
+	}
+	m, _ = m.Update(tea.WindowSizeMsg{Width: 30, Height: 20})
+	_, cmd := m.Update(tickMsg{gen: m.gen + 1})
+	if cmd != nil {
+		runAll(cmd)
+	}
+	if reasserted != 0 {
+		t.Fatalf("a stale tick reasserted %d times", reasserted)
+	}
+}
+
+// runAll executes cmd, following one level of tea.Batch, so a test can observe
+// every command a single Update returned.
+func runAll(cmd tea.Cmd) {
+	if cmd == nil {
+		return
+	}
+	msg := cmd()
+	if batch, ok := msg.(tea.BatchMsg); ok {
+		for _, c := range batch {
+			if c != nil {
+				c()
+			}
+		}
+	}
+}
+
+// findSnapshotMsg runs cmd, following one level of tea.Batch, and returns the
+// snapshotMsg among the results.
+func findSnapshotMsg(cmd tea.Cmd) (snapshotMsg, bool) {
+	if cmd == nil {
+		return snapshotMsg{}, false
+	}
+	msg := cmd()
+	if snap, ok := msg.(snapshotMsg); ok {
+		return snap, true
+	}
+	batch, ok := msg.(tea.BatchMsg)
+	if !ok {
+		return snapshotMsg{}, false
+	}
+	for _, c := range batch {
+		if c == nil {
+			continue
+		}
+		if snap, ok := c().(snapshotMsg); ok {
+			return snap, true
+		}
+	}
+	return snapshotMsg{}, false
 }

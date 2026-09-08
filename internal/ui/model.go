@@ -35,6 +35,16 @@ type Model struct {
 	// instead of running a second one alongside it forever.
 	gen int
 
+	// reassertMouse re-announces the mouse modes to the terminal. herdr decides
+	// whether a click goes to this app from a per-pane flag it keeps for the
+	// pane's terminal, and in 0.9 that flag is a snapshot replicated to the
+	// client rather than read live. bubbletea announces the modes once at
+	// startup, so one write that is lost, missed by a surface patch, or reset
+	// (a live handoff writes "\x1b[?1002l" before restoring) leaves herdr
+	// believing this app wants no mouse for good, and clicks only move focus.
+	// A field rather than a direct call so tests can observe it.
+	reassertMouse tea.Cmd
+
 	groups       []group.Group
 	collapsed    map[string]bool
 	cursor       int
@@ -61,7 +71,14 @@ type tickMsg struct{ gen int }
 
 // New builds a model that polls fetch every interval.
 func New(f Fetcher, r group.Resolver, opt group.Options, interval time.Duration) Model {
-	return Model{fetch: f, resolver: r, opt: opt, interval: interval, collapsed: map[string]bool{}}
+	return Model{
+		fetch:         f,
+		resolver:      r,
+		opt:           opt,
+		interval:      interval,
+		collapsed:     map[string]bool{},
+		reassertMouse: tea.EnableMouseCellMotion,
+	}
 }
 
 // Init implements tea.Model.
@@ -108,6 +125,11 @@ func (m Model) Update(msg tea.Msg) (Model, tea.Cmd) {
 	case tickMsg:
 		if msg.gen != m.gen {
 			return m, nil // a retired chain's tick: let it die here
+		}
+		// The poll is also where the mouse modes are re-announced, so herdr's
+		// view of them can never stay wrong for longer than one interval.
+		if m.reassertMouse != nil {
+			return m, tea.Batch(m.fetchCmd(), m.reassertMouse)
 		}
 		return m, m.fetchCmd()
 	case tea.KeyMsg:
