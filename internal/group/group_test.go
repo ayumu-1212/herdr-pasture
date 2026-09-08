@@ -187,3 +187,17 @@ func TestBuildWorktreeEmptyBranchYieldsEmptyRowBranch(t *testing.T) {
 		t.Fatalf("branch = %q, want empty", gs[0].Rows[0].Branch)
 	}
 }
+
+func TestBuildMarksAgentRows(t *testing.T) {
+	s := snapshot.Snapshot{
+		Workspaces: []snapshot.Workspace{{WorkspaceID: "w1", Number: 1, Label: "a"}},
+		Panes:      []snapshot.Pane{pane("w1:p1", "w1", "/r/a", "claude", "idle", "one")},
+	}
+	gs := Build(s, mapResolver{"/r/a": {Root: "/r/a"}}, Options{})
+	if len(gs) != 1 || len(gs[0].Rows) != 1 {
+		t.Fatalf("got %+v", gs)
+	}
+	if gs[0].Rows[0].Kind != RowAgent {
+		t.Fatalf("Kind = %v, want RowAgent", gs[0].Rows[0].Kind)
+	}
+}

@@ -9,10 +9,24 @@ import (
 	"github.com/ayumu-1212/herdr-pasture/internal/snapshot"
 )
 
+// RowKind distinguishes the two things a row can stand for.
+type RowKind int
+
+const (
+	// RowAgent is a pane running a recognized agent.
+	RowAgent RowKind = iota
+	// RowWorkspace is a workspace with no agent pane at all. It exists so a
+	// workspace never disappears from the list just because nothing is
+	// running in it, which is what lets the standard herdr sidebar be turned
+	// off entirely.
+	RowWorkspace
+)
+
 // Row is one agent pane as displayed in the list. TabID is intentionally
 // omitted: focusing (and the Focused field below) is keyed by pane id, not
 // tab id, so callers never need it.
 type Row struct {
+	Kind            RowKind
 	PaneID          string
 	WorkspaceID     string
 	WorkspaceNumber int
@@ -89,6 +103,7 @@ func Build(s snapshot.Snapshot, r Resolver, opt Options) []Group {
 			wsNum = unknownOrder
 		}
 		g.Rows = append(g.Rows, Row{
+			Kind:            RowAgent,
 			PaneID:          p.PaneID,
 			WorkspaceID:     p.WorkspaceID,
 			WorkspaceNumber: wsNum,
