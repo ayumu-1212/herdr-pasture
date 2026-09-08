@@ -26,7 +26,7 @@ import (
 
 // version must match herdr-plugin.toml's version field: `herdr plugin list`
 // reports the manifest's, and `pasture version` reports this one.
-const version = "0.2.1"
+const version = "0.3.0"
 
 const usage = "usage: pasture <ui|ensure|startup|toggle|redeploy|version>"
 

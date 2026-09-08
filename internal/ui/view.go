@@ -70,6 +70,11 @@ func (m Model) View() string {
 			if m.collapsed[g.Key] {
 				chevron = "▸"
 			}
+			if _, ok := soleWorkspace(g); ok {
+				// This header navigates rather than collapses, so it must not
+				// advertise a chevron it does not honour.
+				chevron = " "
+			}
 			text = headerStyle.Render(truncate(chevron+" "+g.Label, width-2))
 		} else {
 			r := g.Rows[l.row]

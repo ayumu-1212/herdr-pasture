@@ -462,3 +462,50 @@ func TestEnterOnAnAgentRowStillFocusesThePane(t *testing.T) {
 		t.Fatalf("must not focus a workspace: %v", f.focusedWS)
 	}
 }
+
+// A group holding nothing but one bare workspace prints its name twice, on the
+// header and on the row, and the header is the more obvious click target.
+// Collapsing there hides the single duplicate line and looks like the click did
+// nothing, which is what "clicking a workspace does not go there" turned out to
+// be. The header navigates instead.
+func TestHeaderOfAWorkspaceOnlyGroupFocusesTheWorkspace(t *testing.T) {
+	f := &fakeFetcher{}
+	m := New(f, mapResolver{}, group.Options{}, time.Second)
+	m, _ = m.Update(tea.WindowSizeMsg{Width: 30, Height: 20})
+	m, _ = m.Update(snapshotMsg{gen: m.gen, groups: []group.Group{{
+		Key: "/r/a", Label: "polala",
+		Rows: []group.Row{{Kind: group.RowWorkspace, WorkspaceID: "w3", Title: "polala"}},
+	}}})
+	// The cursor starts on the header.
+	next, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	drain(cmd)
+	if len(f.focusedWS) != 1 || f.focusedWS[0] != "w3" {
+		t.Fatalf("focusedWS = %v", f.focusedWS)
+	}
+	if next.collapsed["/r/a"] {
+		t.Fatal("the group must not collapse")
+	}
+}
+
+// A header with agents under it still collapses; navigating there would take
+// away the only way to fold a busy repository.
+func TestHeaderWithAgentsStillCollapses(t *testing.T) {
+	f := &fakeFetcher{}
+	m := New(f, mapResolver{}, group.Options{}, time.Second)
+	m, _ = m.Update(tea.WindowSizeMsg{Width: 30, Height: 20})
+	m, _ = m.Update(snapshotMsg{gen: m.gen, groups: []group.Group{{
+		Key: "/r/a", Label: "a",
+		Rows: []group.Row{
+			{Kind: group.RowAgent, PaneID: "w1:p1", Title: "one"},
+			{Kind: group.RowWorkspace, WorkspaceID: "w9", Title: "bare"},
+		},
+	}}})
+	next, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	drain(cmd)
+	if !next.collapsed["/r/a"] {
+		t.Fatal("the group should have collapsed")
+	}
+	if len(f.focusedWS) != 0 || len(f.focused) != 0 {
+		t.Fatalf("nothing should be focused: ws=%v panes=%v", f.focusedWS, f.focused)
+	}
+}

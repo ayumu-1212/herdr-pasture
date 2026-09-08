@@ -5,6 +5,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/ayumu-1212/herdr-pasture/internal/snapshot"
 )
@@ -123,7 +124,7 @@ func Build(s snapshot.Snapshot, r Resolver, opt Options) []Group {
 		if key == "" {
 			key = p.Cwd
 		}
-		title := p.Title
+		title := stripStatusGlyph(p.Title)
 		if title == "" {
 			title = p.Agent + " " + p.PaneID
 		}
@@ -211,6 +212,35 @@ func Build(s snapshot.Snapshot, r Resolver, opt Options) []Group {
 		return groups[i].Key < groups[j].Key
 	})
 	return groups
+}
+
+// statusGlyphs are the marks herdr may already have put at the front of a
+// pane's title. The list deliberately matches the icons the sidebar draws for
+// each agent state, since those are the ones that would appear twice.
+const statusGlyphs = "◐○✓●◇◆✳*"
+
+// stripStatusGlyph removes a status mark herdr left at the front of a title,
+// with the space after it. Without this a title herdr reported as
+// "◐ email feature" rendered as "◐ ◐ email feature", the icon shown twice.
+// A title that is nothing but a glyph is returned unchanged: stripping it to
+// empty would silently fall back to the agent name for a title that did exist.
+func stripStatusGlyph(title string) string {
+	r, size := utf8.DecodeRuneInString(title)
+	if size == 0 || !strings.ContainsRune(statusGlyphs, r) {
+		return title
+	}
+	// Only a glyph followed by a space is herdr's marker. One glyph, once: a
+	// title may legitimately begin with any of these characters, and the more
+	// eagerly this strips the more real titles it would damage.
+	rest := title[size:]
+	if !strings.HasPrefix(rest, " ") {
+		return title
+	}
+	rest = strings.TrimLeft(rest, " ")
+	if rest == "" {
+		return title
+	}
+	return rest
 }
 
 // uniqueLabels maps each key to its basename, or parent/basename when two

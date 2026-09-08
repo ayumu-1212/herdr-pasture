@@ -790,8 +790,10 @@ func TestEnsureSplitsToTheColumnTarget(t *testing.T) {
 	if err := Ensure(widthDeps(t, c, 50), "w1:t1"); err != nil {
 		t.Fatal(err)
 	}
-	if got := argOf(c.calls, "split", 1); got != "0.25" {
-		t.Fatalf("split ratio = %q, want 0.25 (50 of 200 columns)", got)
+	// oneTab's anchor holds 100 of the tab's 200 columns, and --ratio measures
+	// the anchor, so 50 columns of dock is half of it.
+	if got := argOf(c.calls, "split", 1); got != "0.50" {
+		t.Fatalf("split ratio = %q, want 0.50 (50 of the anchor's 100 columns)", got)
 	}
 }
 
@@ -961,5 +963,61 @@ func TestStartupHealsEvenWithAutoOpenOff(t *testing.T) {
 	}
 	if argOf(c.calls, "run", 0) != "w1:p5" {
 		t.Fatalf("the dock should be restored, calls = %v", c.calls)
+	}
+}
+
+// --ratio is a share of the pane being split, not of the tab, so a tab whose
+// leftmost pane is only part of the width used to give a dock far narrower than
+// width_ratio promised. Reproduced live: a 348-column tab split in half docked
+// at 44 columns instead of 87.
+func TestEnsureSizesTheDockAgainstTheAnchorNotTheTab(t *testing.T) {
+	c := oneTab()
+	// A tab 200 columns wide whose leftmost pane holds only half of it.
+	c.layout = snapshot.Layout{TabID: "w1:t1", Area: snapshot.Rect{Width: 200, Height: 40},
+		Panes: []snapshot.LayoutPane{
+			{PaneID: "w1:p1", Rect: snapshot.Rect{X: 0, Y: 1, Width: 100, Height: 40}},
+			{PaneID: "w1:p2", Rect: snapshot.Rect{X: 100, Y: 1, Width: 100, Height: 40}},
+		}}
+	if err := Ensure(deps(t, c), "w1:t1"); err != nil {
+		t.Fatal(err)
+	}
+	// 25% of the 200-column tab is 50 columns, which is half of the 100-column
+	// anchor, so the ratio handed to herdr must be 0.50, not 0.25.
+	if got := argOf(c.calls, "split", 1); got != "0.50" {
+		t.Fatalf("split ratio = %q, want 0.50 (50 of the anchor's 100 columns)", got)
+	}
+}
+
+func TestEnsureSizesAColumnTargetAgainstTheAnchor(t *testing.T) {
+	c := oneTab()
+	c.layout = snapshot.Layout{TabID: "w1:t1", Area: snapshot.Rect{Width: 200, Height: 40},
+		Panes: []snapshot.LayoutPane{
+			{PaneID: "w1:p1", Rect: snapshot.Rect{X: 0, Y: 1, Width: 100, Height: 40}},
+			{PaneID: "w1:p2", Rect: snapshot.Rect{X: 100, Y: 1, Width: 100, Height: 40}},
+		}}
+	d := deps(t, c)
+	d.Cfg.WidthColumns = 30
+	if err := Ensure(d, "w1:t1"); err != nil {
+		t.Fatal(err)
+	}
+	if got := argOf(c.calls, "split", 1); got != "0.30" {
+		t.Fatalf("split ratio = %q, want 0.30 (30 of the anchor's 100 columns)", got)
+	}
+}
+
+// The dock must never take so much of the anchor that the pane it split from is
+// unusable, however wide the tab makes the target look.
+func TestDockColumnsNeverSwallowTheAnchor(t *testing.T) {
+	// A 400-column tab wants 100 columns of dock, but the anchor is only 60.
+	if got := dockColumns(100, 60); got > 30 {
+		t.Fatalf("dockColumns(100, 60) = %d, want at most half the anchor", got)
+	}
+	// A comfortable anchor gets exactly what was asked for.
+	if got := dockColumns(50, 200); got != 50 {
+		t.Fatalf("dockColumns(50, 200) = %d, want 50", got)
+	}
+	// Below the readable floor the floor wins, even on a narrow anchor.
+	if got := dockColumns(5, 200); got != minColumns {
+		t.Fatalf("dockColumns(5, 200) = %d, want the %d-column floor", got, minColumns)
 	}
 }

@@ -21,7 +21,11 @@ row to jump to that agent; click a group header to collapse it.
 - Panes without an agent are not listed individually, and neither are pasture's
   own panes.
 - A workspace with no agent running in it gets one `◦` row so it stays
-  reachable; clicking it switches to that workspace.
+  reachable; clicking it switches to that workspace. When that row is all a
+  group holds, its header goes to the same place instead of collapsing, and
+  loses its chevron to say so.
+- A status mark herdr already put at the front of a pane's title is dropped, so
+  the row shows one icon rather than two.
 - The title bar shows `disconnected` when `herdr api snapshot` is failing; the
   last known list stays on screen until herdr answers again.
 
@@ -121,8 +125,12 @@ exclude = ["~/tmp/**"]    # hide panes whose cwd matches
 
 `width_columns` wins over `width_ratio` when it is 1 or more. The dock is
 re-measured on every focus event and nudged back to that column count, so it
-keeps its width when the terminal is resized. It is clamped to at least 22
-columns and at most half the tab.
+keeps its width when the terminal is resized.
+
+Both settings describe a share of the whole tab. The dock is carved out of the
+tab's leftmost pane, so on a tab that is already split it takes a larger share
+of that pane to land on the width you asked for. It never takes more than half
+the pane it splits, and never renders below 22 columns.
 
 `exclude` patterns expand a leading `~` and `$VARS`. A trailing `/**` matches the
 directory and everything under it; anything else is a `filepath.Match` glob
@@ -160,6 +168,8 @@ leftmost column. The change takes effect on the next herdr launch.
 - A pane manually renamed `pasture` is adopted (and closed) as one of ours.
 - With `width_columns` set, a width you change by hand is reset to the target on
   the next focus event.
+- On a tab whose leftmost pane is narrower than twice the target, the dock is
+  capped at half that pane rather than the width you asked for.
 - A herdr server restart (`herdr update` forces one) leaves each dock as an empty
   shell, because the pane comes back but the process in it does not. The
   `[[startup]]` hook runs the UI in those panes again straight away, so the dock
@@ -186,3 +196,8 @@ of a real 0.8.0 config: the plugin stays registered across the version change,
 the event hooks fire, docking and the fixed width behave the same, and a server
 restart, which leaves every dock as an empty shell and fires no event at all, is
 recovered in place by the `[[startup]]` hook.
+
+v0.3 was verified on 0.9.0 too: on a 120-column tab already split in half, the
+dock came out 30 columns, a quarter of the tab, where the old arithmetic gave
+15; a workspace-only group rendered its header without a chevron; and a
+synthetic click on that header moved the focused workspace.
