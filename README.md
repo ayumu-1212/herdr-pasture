@@ -28,7 +28,7 @@ row to jump to that agent; click a group header to collapse it.
 herdr plugin install ayumu-1212/herdr-pasture
 ```
 
-Requires herdr >= 0.8.0 and Go >= 1.22 (the build step compiles the binary).
+Requires herdr >= 0.8.0 and Go >= 1.27 (the build step compiles the binary).
 macOS and Linux.
 
 ### Local development
@@ -68,9 +68,10 @@ description = "toggle pasture"
 Both actions exit non-zero when the work did not happen — herdr unreachable, or
 another pasture process still holding the tab's lock while it starts a pane. The
 message on stderr names the busy tabs; the fix is to invoke the action again a
-moment later. Automatic docking (`ensure`) stays silent for its expected
-conditions (auto_open off, snoozed tab, contended lock) and only fails when
-herdr itself is unreachable.
+moment later. Automatic docking (`ensure`) runs from an event hook, so it always
+exits 0: expected conditions (auto_open off, snoozed tab, contended lock) pass
+silently, and a real failure prints the reason on stderr and leaves the retry to
+the next event rather than filling the plugin log with failed commands.
 
 ### Keys inside the pane
 
@@ -112,8 +113,9 @@ Outside herdr (no `HERDR_PLUGIN_CONFIG_DIR`) the config is read from
   height rather than the full tab height.
 - If the tab layout is unavailable at the moment an event fires, that tab is
   left undocked until the next event rather than docked in the wrong place.
-- Panes spawned by herdr do not inherit `HERDR_BIN_PATH`, so `herdr` must be on
-  `PATH` inside your shell for the pane's poll loop to work.
+- Running `pasture toggle` by hand outside herdr uses its own state directory
+  (`~/.local/state/herdr-pasture`), so it does not see snoozes set through the
+  plugin action.
 - Repository lookups are cached for the life of the pane process; moving or
   re-pointing a worktree is picked up after a `redeploy`.
 - A pane manually renamed `pasture` is adopted (and closed) as one of ours.

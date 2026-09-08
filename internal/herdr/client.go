@@ -104,3 +104,12 @@ func (c *Client) ReportToken(paneID, name, value string) error {
 		"--token", name+"="+value)
 	return err
 }
+
+// ClearToken removes a token stamped by ReportToken. The UI clears its own on
+// exit so the pane it leaves behind reads as a corpse the next event can reap,
+// rather than a live dock that is really just an idle shell.
+func (c *Client) ClearToken(paneID, name string) error {
+	_, err := c.r.Run("pane", "report-metadata", paneID, "--source", "pasture",
+		"--clear-token", name)
+	return err
+}

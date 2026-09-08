@@ -64,16 +64,17 @@ func main() {
 		os.Exit(2)
 	}
 	if err != nil {
-		// Every error reaching here means the requested work did not happen:
-		// herdr was unreachable, or (for toggle/redeploy) another pasture
-		// process held the tab's lock. dock's messages already name the busy
-		// tabs, and the recovery is simply to invoke the action again in a
-		// moment. Both cases exit 1 so herdr reports the action as failed
-		// rather than silently doing nothing; dock.Ensure deliberately returns
-		// nil for its own expected conditions (auto_open off, snoozed, locked)
-		// so ordinary event hooks stay quiet.
 		fmt.Fprintln(os.Stderr, "pasture:", err)
-		os.Exit(1)
+		// ensure runs from an event hook on every focus change, so a transient
+		// herdr outage must not turn into a burst of failed plugin commands in
+		// the log: it reports the reason and exits 0, and the next event
+		// retries. toggle and redeploy are explicit user actions, so a failure
+		// there exits 1 rather than claiming work that did not happen; dock's
+		// message already names any busy tab and the recovery is to invoke the
+		// action again in a moment.
+		if os.Args[1] != "ensure" {
+			os.Exit(1)
+		}
 	}
 }
 
@@ -135,9 +136,24 @@ func runUI(cfg config.Config, client *herdr.Client) error {
 		if err := client.ReportToken(paneID, dock.Token, strconv.Itoa(os.Getpid())); err != nil {
 			fmt.Fprintln(os.Stderr, "pasture: report token:", err)
 		}
+		// dock starts this pane with `pane run`, which types into a live shell,
+		// so quitting the UI leaves the shell and its token behind. Without
+		// this the pane reads as a live dock forever and no focus event ever
+		// reclaims the blank column it leaves.
+		defer func() {
+			if err := client.ClearToken(paneID, dock.Token); err != nil {
+				fmt.Fprintln(os.Stderr, "pasture: clear token:", err)
+			}
+		}()
 	}
 	opt := group.Options{SelfToken: dock.Token, Exclude: cfg.Excluded}
 	model := ui.New(client, group.NewGitResolver(), opt, time.Duration(cfg.PollIntervalMs)*time.Millisecond)
-	_, err := tea.NewProgram(teaModel{model}, tea.WithMouseCellMotion()).Run()
+	// WithAltScreen is not cosmetic: the UI maps a click's Y to a list row
+	// assuming its own first line is row 0. dock starts it with `pane run`,
+	// which types into a live shell, so an inline frame would begin one or two
+	// rows below the top of the pane and every click would land on the wrong
+	// row. The alt screen gives the frame the whole pane.
+	_, err := tea.NewProgram(teaModel{model},
+		tea.WithAltScreen(), tea.WithMouseCellMotion()).Run()
 	return err
 }

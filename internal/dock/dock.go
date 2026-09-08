@@ -168,6 +168,13 @@ func openLocked(d Deps, tabID string) error {
 		"HERDR_PLUGIN_STATE_DIR":  d.StateDir,
 		"HERDR_PLUGIN_CONFIG_DIR": config.Dir(),
 	}
+	// A pane shell inherits HERDR_PANE_ID and friends but not HERDR_BIN_PATH,
+	// so without this the UI depends on `herdr` being on the interactive
+	// shell's PATH. If that lookup fails it cannot stamp its token either, and
+	// every focus event would reap the pane and split another one.
+	if bin := os.Getenv("HERDR_BIN_PATH"); bin != "" {
+		env["HERDR_BIN_PATH"] = bin
+	}
 	// WidthRatio goes to --ratio unchanged. Verified against herdr 0.8.0:
 	// --ratio is the share kept by the ORIGINAL pane (split w1:p1 --ratio 0.25
 	// leaves w1:p1 at 26% and puts the new w1:p2 at 74% on the right), and
