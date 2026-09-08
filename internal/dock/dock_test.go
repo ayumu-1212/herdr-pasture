@@ -3,6 +3,7 @@ package dock
 import (
 	"bytes"
 	"errors"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
@@ -69,6 +70,13 @@ func (f *fakeClient) Layout(paneID string) (snapshot.Layout, error) {
 	if err := f.errs["layout"]; err != nil {
 		return snapshot.Layout{}, err
 	}
+	// Only one layout is stored, so refuse a pane from another tab rather than
+	// silently handing back the wrong geometry and letting a test pass on it.
+	for _, p := range f.panes {
+		if p.PaneID == paneID && f.layout.TabID != "" && p.TabID != f.layout.TabID {
+			return snapshot.Layout{}, fmt.Errorf("fake has no layout for tab %s", p.TabID)
+		}
+	}
 	return f.layout, nil
 }
 
@@ -117,7 +125,9 @@ func (f *fakeClient) Close(paneID string) error {
 	if err := f.errs["close"]; err != nil {
 		return err
 	}
-	kept := f.panes[:0]
+	// A fresh slice, not f.panes[:0]: aliasing the backing array would corrupt
+	// every list PaneList already handed out.
+	kept := make([]snapshot.Pane, 0, len(f.panes))
 	for _, p := range f.panes {
 		if p.PaneID != paneID {
 			kept = append(kept, p)

@@ -131,6 +131,11 @@ func open(d Deps, tabID string) error {
 // stale by the time the lock is held (the process that went first may already
 // have docked this tab) and deciding from it would open a second pane in the
 // tab.
+//
+// The lock excludes other pasture processes, not the user: between leftmost and
+// Split they can close the anchor (Split fails and nothing is created) or
+// rearrange the tab (the dock lands somewhere unintended and self-corrects on
+// the next toggle or redeploy). Neither leaves an orphan.
 func openLocked(d Deps, tabID string) error {
 	panes, err := d.Client.PaneList()
 	if err != nil {
@@ -258,8 +263,10 @@ func Toggle(d Deps, tabID string) error {
 // Redeploy closes every pasture pane (live or dead) and clears all snoozes so
 // the next focus event respawns them on the current build. It takes each
 // affected tab's lock in turn; a tab whose lock is held is left alone and named
-// in the returned error, because closing a pane another process is still
-// building would leave a live pane running the old binary.
+// in the returned error. A builder holds the lock for at most tokenRetries *
+// tokenWait, so the right recovery is to run redeploy again in a moment, and
+// naming the tabs tells the user which ones still need it. Note the snoozes are
+// cleared even when some tabs were skipped.
 func Redeploy(d Deps) error {
 	d = d.normalize()
 	panes, err := d.Client.PaneList()
