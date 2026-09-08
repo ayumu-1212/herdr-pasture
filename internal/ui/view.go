@@ -4,12 +4,16 @@ import (
 	"strings"
 
 	"github.com/charmbracelet/lipgloss"
+
+	"github.com/ayumu-1212/herdr-pasture/internal/group"
 )
 
 const (
 	appName           = "herdr-pasture"
 	disconnectedLabel = "disconnected"
 	cursorMarker      = "›"
+	// workspaceIcon marks a workspace with no agent running in it.
+	workspaceIcon = "◦"
 )
 
 var (
@@ -69,12 +73,17 @@ func (m Model) View() string {
 			text = headerStyle.Render(truncate(chevron+" "+g.Label, width-2))
 		} else {
 			r := g.Rows[l.row]
-			icon := statusIcons[r.Status]
-			if icon == "" {
-				icon = statusIcons["unknown"]
-			}
-			if st, ok := statusStyles[r.Status]; ok {
-				icon = st.Render(icon)
+			var icon string
+			if r.Kind == group.RowWorkspace {
+				icon = dimStyle.Render(workspaceIcon)
+			} else {
+				icon = statusIcons[r.Status]
+				if icon == "" {
+					icon = statusIcons["unknown"]
+				}
+				if st, ok := statusStyles[r.Status]; ok {
+					icon = st.Render(icon)
+				}
 			}
 			label := r.Title
 			if r.Branch != "" {

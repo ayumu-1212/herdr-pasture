@@ -127,3 +127,37 @@ func TestDirPrefersPluginEnv(t *testing.T) {
 		t.Fatalf("got %q", Dir())
 	}
 }
+
+func TestLoadWidthColumns(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.toml")
+	if err := os.WriteFile(path, []byte("width_columns = 30\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cfg, warnings := Load(path)
+	if len(warnings) != 0 {
+		t.Fatalf("warnings = %v", warnings)
+	}
+	if cfg.WidthColumns != 30 {
+		t.Fatalf("WidthColumns = %d", cfg.WidthColumns)
+	}
+}
+
+func TestLoadNegativeWidthColumnsResetsWithAWarning(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.toml")
+	if err := os.WriteFile(path, []byte("width_columns = -5\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cfg, warnings := Load(path)
+	if cfg.WidthColumns != 0 {
+		t.Fatalf("WidthColumns = %d, want 0", cfg.WidthColumns)
+	}
+	if len(warnings) != 1 {
+		t.Fatalf("want 1 warning, got %v", warnings)
+	}
+}
+
+func TestDefaultWidthColumnsIsZero(t *testing.T) {
+	if Default().WidthColumns != 0 {
+		t.Fatalf("WidthColumns = %d, want 0 so width_ratio stays the default path", Default().WidthColumns)
+	}
+}

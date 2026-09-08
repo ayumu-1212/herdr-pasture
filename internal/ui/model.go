@@ -14,6 +14,7 @@ import (
 type Fetcher interface {
 	Snapshot() (snapshot.Snapshot, error)
 	FocusAgent(paneID string) error
+	FocusWorkspace(workspaceID string) error
 }
 
 // Model is the bubbletea model. Copy semantics: Update returns a new value.
@@ -169,7 +170,8 @@ func (m Model) handleMouse(msg tea.MouseMsg) (Model, tea.Cmd) {
 	return m, nil
 }
 
-// activate toggles a header or focuses a row's pane.
+// activate toggles a header, focuses a row's pane, or focuses a workspace
+// that has no agent pane of its own.
 func (m Model) activate(idx int) (Model, tea.Cmd) {
 	ls := m.lines()
 	if idx < 0 || idx >= len(ls) {
@@ -182,10 +184,16 @@ func (m Model) activate(idx int) (Model, tea.Cmd) {
 		m.clampCursor()
 		return m, nil
 	}
-	paneID := g.Rows[l.row].PaneID
+	row := g.Rows[l.row]
 	fetch := m.fetch
 	return m, func() tea.Msg {
-		_ = fetch.FocusAgent(paneID) // a vanished pane simply disappears on the next poll
+		// A row that has vanished simply disappears on the next poll, so
+		// neither error is worth surfacing.
+		if row.Kind == group.RowWorkspace {
+			_ = fetch.FocusWorkspace(row.WorkspaceID)
+		} else {
+			_ = fetch.FocusAgent(row.PaneID)
+		}
 		return nil
 	}
 }

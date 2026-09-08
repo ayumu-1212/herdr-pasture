@@ -50,6 +50,28 @@ func (c *Client) FocusAgent(paneID string) error {
 	return err
 }
 
+// FocusWorkspace focuses workspaceID, switching the UI to its active tab. It
+// is how a row for a workspace with no agent pane is activated.
+func (c *Client) FocusWorkspace(workspaceID string) error {
+	_, err := c.r.Run("workspace", "focus", workspaceID)
+	return err
+}
+
+// Resize widens the pane on the left of paneID's split by amount * the tab's
+// width, or narrows it when amount is negative. Verified against herdr 0.8.0:
+// on a 54-column tab, --amount 0.1 moved a 14-column pane to 19 columns.
+func (c *Client) Resize(paneID string, amount float64) error {
+	direction := "right"
+	if amount < 0 {
+		direction = "left"
+		amount = -amount
+	}
+	_, err := c.r.Run("pane", "resize", "--pane", paneID,
+		"--direction", direction,
+		"--amount", strconv.FormatFloat(amount, 'f', 4, 64))
+	return err
+}
+
 // Split splits paneID to the right without focusing the new pane. ratio is the
 // share kept by paneID. env is passed as --env KEY=VALUE in sorted key order.
 // It returns the new pane id.

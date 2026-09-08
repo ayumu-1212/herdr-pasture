@@ -12,14 +12,20 @@ import (
 )
 
 type fakeFetcher struct {
-	snap    snapshot.Snapshot
-	err     error
-	focused []string
+	snap      snapshot.Snapshot
+	err       error
+	focused   []string
+	focusedWS []string
 }
 
 func (f *fakeFetcher) Snapshot() (snapshot.Snapshot, error) { return f.snap, f.err }
 func (f *fakeFetcher) FocusAgent(id string) error {
 	f.focused = append(f.focused, id)
+	return nil
+}
+
+func (f *fakeFetcher) FocusWorkspace(id string) error {
+	f.focusedWS = append(f.focusedWS, id)
 	return nil
 }
 
@@ -139,7 +145,8 @@ func (c *countingFetcher) Snapshot() (snapshot.Snapshot, error) {
 	c.calls++
 	return snapshot.Snapshot{}, nil
 }
-func (c *countingFetcher) FocusAgent(string) error { return nil }
+func (c *countingFetcher) FocusAgent(string) error     { return nil }
+func (c *countingFetcher) FocusWorkspace(string) error { return nil }
 
 // TestRefreshKeepsExactlyOnePollChain drives the model the way bubbletea's
 // event loop does — run every pending cmd, feed the messages back — and counts
@@ -415,5 +422,43 @@ func TestCursorStopsAtTheTop(t *testing.T) {
 	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("k")})
 	if m.cursor != 0 {
 		t.Fatalf("cursor = %d, want 0", m.cursor)
+	}
+}
+
+func TestEnterOnAWorkspaceRowFocusesTheWorkspace(t *testing.T) {
+	f := &fakeFetcher{}
+	m := New(f, mapResolver{}, group.Options{}, time.Second)
+	m, _ = m.Update(tea.WindowSizeMsg{Width: 30, Height: 20})
+	m, _ = m.Update(snapshotMsg{gen: m.gen, groups: []group.Group{{
+		Key: "/r/a", Label: "a",
+		Rows: []group.Row{{Kind: group.RowWorkspace, WorkspaceID: "w2", Title: "bare"}},
+	}}})
+	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyDown}) // cursor onto the row
+	_, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	drain(cmd)
+	if len(f.focusedWS) != 1 || f.focusedWS[0] != "w2" {
+		t.Fatalf("focusedWS = %v", f.focusedWS)
+	}
+	if len(f.focused) != 0 {
+		t.Fatalf("must not focus a pane: %v", f.focused)
+	}
+}
+
+func TestEnterOnAnAgentRowStillFocusesThePane(t *testing.T) {
+	f := &fakeFetcher{}
+	m := New(f, mapResolver{}, group.Options{}, time.Second)
+	m, _ = m.Update(tea.WindowSizeMsg{Width: 30, Height: 20})
+	m, _ = m.Update(snapshotMsg{gen: m.gen, groups: []group.Group{{
+		Key: "/r/a", Label: "a",
+		Rows: []group.Row{{Kind: group.RowAgent, PaneID: "w1:p1", Title: "one"}},
+	}}})
+	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyDown})
+	_, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	drain(cmd)
+	if len(f.focused) != 1 || f.focused[0] != "w1:p1" {
+		t.Fatalf("focused = %v", f.focused)
+	}
+	if len(f.focusedWS) != 0 {
+		t.Fatalf("must not focus a workspace: %v", f.focusedWS)
 	}
 }

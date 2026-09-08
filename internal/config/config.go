@@ -14,8 +14,11 @@ import (
 // Config holds user-tunable settings. Zero values are never used directly;
 // call Default or Load.
 type Config struct {
-	AutoOpen       bool     `toml:"auto_open"`
-	WidthRatio     float64  `toml:"width_ratio"`
+	AutoOpen   bool    `toml:"auto_open"`
+	WidthRatio float64 `toml:"width_ratio"`
+	// WidthColumns fixes the dock at this many columns. 0 (the default) uses
+	// WidthRatio instead, which is a share of the tab width.
+	WidthColumns   int      `toml:"width_columns"`
 	PollIntervalMs int      `toml:"poll_interval_ms"`
 	Exclude        []string `toml:"exclude"`
 }
@@ -62,6 +65,10 @@ func Load(path string) (Config, []string) {
 	if cfg.PollIntervalMs < 100 {
 		warnings = append(warnings, fmt.Sprintf("config: poll_interval_ms %d below 100, using 1000", cfg.PollIntervalMs))
 		cfg.PollIntervalMs = 1000
+	}
+	if cfg.WidthColumns < 0 {
+		warnings = append(warnings, fmt.Sprintf("config: width_columns %d is negative, using width_ratio", cfg.WidthColumns))
+		cfg.WidthColumns = 0
 	}
 	if len(cfg.Exclude) > 0 {
 		valid := cfg.Exclude[:0]
