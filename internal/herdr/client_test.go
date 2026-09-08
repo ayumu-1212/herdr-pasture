@@ -47,13 +47,20 @@ func TestSnapshotPropagatesRunnerError(t *testing.T) {
 
 func TestSplitBuildsArgvAndReturnsNewPane(t *testing.T) {
 	r := &FakeRunner{Outputs: []string{`{"result":{"pane":{"pane_id":"w1:p7"}}}`}}
-	id, err := New(r).Split("w1:p1", 0.25, "/work", map[string]string{"A": "1"})
+	id, err := New(r).Split("w1:p1", 0.25, "/work", map[string]string{"B": "2", "A": "1"})
 	if err != nil || id != "w1:p7" {
 		t.Fatalf("got %q, %v", id, err)
 	}
-	want := []string{"pane", "split", "w1:p1", "--direction", "right", "--ratio", "0.25", "--no-focus", "--cwd", "/work", "--env", "A=1"}
+	want := []string{"pane", "split", "w1:p1", "--direction", "right", "--ratio", "0.25", "--no-focus", "--cwd", "/work", "--env", "A=1", "--env", "B=2"}
 	if !reflect.DeepEqual(r.Calls[0], want) {
 		t.Fatalf("argv = %v", r.Calls[0])
+	}
+}
+
+func TestSplitPropagatesDecodeError(t *testing.T) {
+	r := &FakeRunner{Outputs: []string{`{}`}}
+	if _, err := New(r).Split("w1:p1", 0.25, "", nil); err == nil {
+		t.Fatal("expected error when response has no pane_id")
 	}
 }
 

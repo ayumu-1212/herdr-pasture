@@ -1,7 +1,6 @@
 package herdr
 
 import (
-	"fmt"
 	"sort"
 	"strconv"
 
@@ -102,6 +101,6 @@ func (c *Client) Close(paneID string) error {
 // ReportToken stamps a display-metadata token on paneID under source "pasture".
 func (c *Client) ReportToken(paneID, name, value string) error {
 	_, err := c.r.Run("pane", "report-metadata", paneID, "--source", "pasture",
-		"--token", fmt.Sprintf("%s=%s", name, value))
+		"--token", name+"="+value)
 	return err
 }
