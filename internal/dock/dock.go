@@ -48,6 +48,7 @@ type Client interface {
 	RunInPane(paneID, command string) error
 	Rename(paneID, label string) error
 	Close(paneID string) error
+	Resize(paneID string, amount float64) error
 }
 
 // Deps bundles everything the dock operations need; tests inject fakes.
@@ -143,6 +144,7 @@ func openLocked(d Deps, tabID string) error {
 	}
 	live, corpses := classify(panes, tabID)
 	if live != "" {
+		applyWidth(d, live, tabID)
 		return nil
 	}
 	for _, id := range corpses {
@@ -160,7 +162,7 @@ func openLocked(d Deps, tabID string) error {
 		d.logf("tab %s is snoozed; skipping", tabID)
 		return nil
 	}
-	anchor, ok := leftmost(d, panes, tabID)
+	anchor, layout, ok := leftmost(d, panes, tabID)
 	if !ok {
 		return nil // leftmost logged why
 	}
@@ -182,7 +184,13 @@ func openLocked(d Deps, tabID string) error {
 	// size (after the swap w1:p2 sits in the 26% left slot). So splitting with
 	// WidthRatio and swapping the new pane leftwards lands the dock in a slot
 	// exactly WidthRatio wide. Do not "fix" this to 1-WidthRatio.
-	newID, err := d.Client.Split(anchor.PaneID, d.Cfg.WidthRatio, anchor.Cwd, env)
+	//
+	// A column target overrides the ratio by converting to the same thing.
+	ratio := d.Cfg.WidthRatio
+	if d.Cfg.WidthColumns > 0 && layout.Area.Width > 0 {
+		ratio = float64(targetColumns(d.Cfg.WidthColumns, layout.Area.Width)) / float64(layout.Area.Width)
+	}
+	newID, err := d.Client.Split(anchor.PaneID, ratio, anchor.Cwd, env)
 	if err != nil {
 		return err
 	}
@@ -221,6 +229,64 @@ func openLocked(d Deps, tabID string) error {
 func reap(d Deps, paneID string) {
 	if err := d.Client.Close(paneID); err != nil {
 		d.logf("close half-built pasture pane %s: %v", paneID, err)
+	}
+}
+
+// minColumns is the narrowest the list stays readable at. The UI applies the
+// same floor when it has no size yet.
+const minColumns = 22
+
+// targetColumns clamps a configured column count to what a tab of tabWidth can
+// actually give the dock: never below minColumns, and never more than half the
+// tab. On a tab too narrow for both rules the floor wins and the dock takes
+// more than half rather than becoming unreadable.
+func targetColumns(columns, tabWidth int) int {
+	limit := tabWidth / 2
+	if limit < minColumns {
+		limit = minColumns
+	}
+	if columns > limit {
+		return limit
+	}
+	if columns < minColumns {
+		return minColumns
+	}
+	return columns
+}
+
+// applyWidth nudges an existing dock back to the configured column count, so a
+// terminal resize (which herdr honours proportionally) does not change the
+// dock's width. It is a no-op unless width_columns is set, and it ignores a
+// drift of a single column so rounding cannot make the pane twitch on every
+// focus event. A width the user set by hand is reset the same way; that is the
+// stated trade-off of asking for a fixed width.
+func applyWidth(d Deps, paneID, tabID string) {
+	if d.Cfg.WidthColumns <= 0 {
+		return
+	}
+	layout, err := d.Client.Layout(paneID)
+	if err != nil {
+		d.logf("width of tab %s: layout unavailable (%v); leaving it alone", tabID, err)
+		return
+	}
+	if layout.Area.Width <= 0 {
+		return
+	}
+	current := 0
+	for _, lp := range layout.Panes {
+		if lp.PaneID == paneID {
+			current = lp.Rect.Width
+		}
+	}
+	if current == 0 {
+		return
+	}
+	delta := targetColumns(d.Cfg.WidthColumns, layout.Area.Width) - current
+	if delta > -2 && delta < 2 {
+		return
+	}
+	if err := d.Client.Resize(paneID, float64(delta)/float64(layout.Area.Width)); err != nil {
+		d.logf("width of tab %s: resize failed (%v); leaving it alone", tabID, err)
 	}
 }
 
@@ -351,7 +417,7 @@ func focusedTab(panes []snapshot.Pane) string {
 // the layout is unavailable it reports false rather than guessing: docking is
 // the whole point of knowing which pane is on the left edge, and a dock spliced
 // into the middle of a tab is worse than no dock until the next event.
-func leftmost(d Deps, panes []snapshot.Pane, tabID string) (snapshot.Pane, bool) {
+func leftmost(d Deps, panes []snapshot.Pane, tabID string) (snapshot.Pane, snapshot.Layout, bool) {
 	byID := map[string]snapshot.Pane{}
 	var sample snapshot.Pane
 	for _, p := range panes {
@@ -362,16 +428,16 @@ func leftmost(d Deps, panes []snapshot.Pane, tabID string) (snapshot.Pane, bool)
 	}
 	if len(byID) == 0 {
 		d.logf("tab %s has no panes; skipping", tabID)
-		return snapshot.Pane{}, false
+		return snapshot.Pane{}, snapshot.Layout{}, false
 	}
 	layout, err := d.Client.Layout(sample.PaneID)
 	if err != nil {
 		d.logf("layout of tab %s unavailable (%v); not docking, the next event retries", tabID, err)
-		return snapshot.Pane{}, false
+		return snapshot.Pane{}, snapshot.Layout{}, false
 	}
 	if len(layout.Panes) == 0 {
 		d.logf("layout of tab %s lists no panes; not docking, the next event retries", tabID)
-		return snapshot.Pane{}, false
+		return snapshot.Pane{}, snapshot.Layout{}, false
 	}
 	best := layout.Panes[0]
 	for _, lp := range layout.Panes[1:] {
@@ -382,9 +448,9 @@ func leftmost(d Deps, panes []snapshot.Pane, tabID string) (snapshot.Pane, bool)
 	p, ok := byID[best.PaneID]
 	if !ok {
 		d.logf("leftmost pane %s of tab %s is missing from the pane list; not docking", best.PaneID, tabID)
-		return snapshot.Pane{}, false
+		return snapshot.Pane{}, snapshot.Layout{}, false
 	}
-	return p, true
+	return p, layout, true
 }
 
 func hasToken(d Deps, paneID string) bool {

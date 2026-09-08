@@ -137,6 +137,11 @@ func (f *fakeClient) Close(paneID string) error {
 	return nil
 }
 
+func (f *fakeClient) Resize(paneID string, amount float64) error {
+	f.rec("resize", paneID, strconv.FormatFloat(amount, 'f', 4, 64))
+	return f.errs["resize"]
+}
+
 func (f *fakeClient) has(paneID string) bool {
 	for _, p := range f.panes {
 		if p.PaneID == paneID {
@@ -736,5 +741,108 @@ func TestNilNowAndSleepDoNotPanic(t *testing.T) {
 	}
 	if len(c.calls) == 0 {
 		t.Fatalf("calls = %v, want the dock to be built", names(c.calls))
+	}
+}
+
+// widthDeps builds Deps with a column target so the ratio and resize
+// arithmetic can be asserted exactly.
+func widthDeps(t *testing.T, c *fakeClient, columns int) Deps {
+	t.Helper()
+	d := deps(t, c)
+	d.Cfg.WidthColumns = columns
+	return d
+}
+
+func argOf(calls []call, name string, i int) string {
+	for _, c := range calls {
+		if c.Name == name {
+			return c.Args[i]
+		}
+	}
+	return ""
+}
+
+func TestEnsureSplitsToTheColumnTarget(t *testing.T) {
+	c := oneTab()
+	c.layout.Area.Width = 200
+	if err := Ensure(widthDeps(t, c, 50), "w1:t1"); err != nil {
+		t.Fatal(err)
+	}
+	if got := argOf(c.calls, "split", 1); got != "0.25" {
+		t.Fatalf("split ratio = %q, want 0.25 (50 of 200 columns)", got)
+	}
+}
+
+func TestEnsureResizesAnExistingDockThatDrifted(t *testing.T) {
+	c := oneTab()
+	c.layout.Area.Width = 200
+	c.panes = append(c.panes, snapshot.Pane{
+		PaneID: "w1:p5", TabID: "w1:t1", Label: Label,
+		Tokens: map[string]string{Token: "77"},
+	})
+	c.layout.Panes = append(c.layout.Panes, snapshot.LayoutPane{
+		PaneID: "w1:p5", Rect: snapshot.Rect{X: 0, Y: 1, Width: 20, Height: 40},
+	})
+	if err := Ensure(widthDeps(t, c, 50), "w1:t1"); err != nil {
+		t.Fatal(err)
+	}
+	if got := argOf(c.calls, "resize", 1); got != "0.1500" {
+		t.Fatalf("resize amount = %q, want 0.1500 ((50-20)/200)", got)
+	}
+	if got := argOf(c.calls, "resize", 0); got != "w1:p5" {
+		t.Fatalf("resized %q, want the dock pane", got)
+	}
+	if argOf(c.calls, "split", 0) != "" {
+		t.Fatalf("a live dock must not be split again: %v", c.calls)
+	}
+}
+
+func TestEnsureLeavesAWidthWithinOneColumnAlone(t *testing.T) {
+	c := oneTab()
+	c.layout.Area.Width = 200
+	c.panes = append(c.panes, snapshot.Pane{
+		PaneID: "w1:p5", TabID: "w1:t1", Label: Label,
+		Tokens: map[string]string{Token: "77"},
+	})
+	c.layout.Panes = append(c.layout.Panes, snapshot.LayoutPane{
+		PaneID: "w1:p5", Rect: snapshot.Rect{X: 0, Y: 1, Width: 49, Height: 40},
+	})
+	if err := Ensure(widthDeps(t, c, 50), "w1:t1"); err != nil {
+		t.Fatal(err)
+	}
+	if argOf(c.calls, "resize", 0) != "" {
+		t.Fatalf("a one-column drift must not resize: %v", c.calls)
+	}
+}
+
+func TestEnsureWithoutAColumnTargetNeverResizes(t *testing.T) {
+	c := oneTab()
+	c.layout.Area.Width = 200
+	c.panes = append(c.panes, snapshot.Pane{
+		PaneID: "w1:p5", TabID: "w1:t1", Label: Label,
+		Tokens: map[string]string{Token: "77"},
+	})
+	c.layout.Panes = append(c.layout.Panes, snapshot.LayoutPane{
+		PaneID: "w1:p5", Rect: snapshot.Rect{X: 0, Y: 1, Width: 20, Height: 40},
+	})
+	if err := Ensure(deps(t, c), "w1:t1"); err != nil {
+		t.Fatal(err)
+	}
+	if argOf(c.calls, "resize", 0) != "" {
+		t.Fatalf("width_columns unset must not resize: %v", c.calls)
+	}
+}
+
+func TestTargetColumnsClampsToTheFloorAndHalfTheTab(t *testing.T) {
+	cases := []struct{ columns, tab, want int }{
+		{50, 200, 50},
+		{5, 200, 22},    // below the readable floor
+		{150, 200, 100}, // more than half the tab
+		{30, 30, 22},    // tab too narrow for both rules; the floor wins
+	}
+	for _, tc := range cases {
+		if got := targetColumns(tc.columns, tc.tab); got != tc.want {
+			t.Errorf("targetColumns(%d, %d) = %d, want %d", tc.columns, tc.tab, got, tc.want)
+		}
 	}
 }
