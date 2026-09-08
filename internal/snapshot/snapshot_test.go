@@ -4,6 +4,7 @@ import "testing"
 
 const snapshotJSON = `{"id":"cli:api:snapshot","result":{"snapshot":{
  "focused_pane_id":"w6:p1",
+ "focused_workspace_id":"w6",
  "panes":[
   {"agent":"claude","agent_status":"working","cwd":"/r/a","focused":true,"pane_id":"w6:p1","tab_id":"w6:t1","terminal_title_stripped":"task one","workspace_id":"w6"},
   {"agent":null,"agent_status":"idle","cwd":"/r/a","focused":false,"pane_id":"w6:p2","tab_id":"w6:t1","terminal_title_stripped":"zsh","workspace_id":"w6","label":"pasture","tokens":{"pasture":"123"}}
@@ -18,6 +19,9 @@ func TestDecodeSnapshot(t *testing.T) {
 	}
 	if s.FocusedPaneID != "w6:p1" || len(s.Panes) != 2 || len(s.Workspaces) != 1 {
 		t.Fatalf("got %+v", s)
+	}
+	if s.FocusedWorkspaceID != "w6" {
+		t.Fatalf("FocusedWorkspaceID = %q", s.FocusedWorkspaceID)
 	}
 	if s.Panes[0].Agent != "claude" || s.Panes[0].Title != "task one" {
 		t.Fatalf("pane0 = %+v", s.Panes[0])

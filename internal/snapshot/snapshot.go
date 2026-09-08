@@ -31,9 +31,10 @@ type Workspace struct {
 
 // Snapshot is the live session state returned by `herdr api snapshot`.
 type Snapshot struct {
-	Panes         []Pane      `json:"panes"`
-	Workspaces    []Workspace `json:"workspaces"`
-	FocusedPaneID string      `json:"focused_pane_id"`
+	Panes              []Pane      `json:"panes"`
+	Workspaces         []Workspace `json:"workspaces"`
+	FocusedPaneID      string      `json:"focused_pane_id"`
+	FocusedWorkspaceID string      `json:"focused_workspace_id"`
 }
 
 // Rect is a pane rectangle in terminal cells.
