@@ -1,0 +1,45 @@
+id = "herdr-pasture"
+name = "Pasture"
+version = "0.1.0"
+min_herdr_version = "0.8.0"
+description = "Agents grouped by repository, docked on the left of every tab"
+platforms = ["macos", "linux"]
+
+[[build]]
+command = ["sh", "scripts/build.sh"]
+
+# Manual entry point (`herdr plugin pane open --plugin herdr-pasture --entrypoint ui`).
+# Normal docking goes through `ensure`, which needs split + swap for a left edge.
+[[panes]]
+id = "ui"
+title = "Pasture"
+placement = "split"
+command = ["./bin/pasture", "ui"]
+
+[[actions]]
+id = "toggle"
+title = "Pasture: toggle"
+contexts = ["global"]
+command = ["./bin/pasture", "toggle"]
+
+[[actions]]
+id = "redeploy"
+title = "Pasture: redeploy panes"
+contexts = ["global"]
+command = ["./bin/pasture", "redeploy"]
+
+[[events]]
+on = "pane.focused"
+command = ["./bin/pasture", "ensure"]
+
+[[events]]
+on = "tab.focused"
+command = ["./bin/pasture", "ensure"]
+
+[[events]]
+on = "tab.created"
+command = ["./bin/pasture", "ensure"]
+
+[[events]]
+on = "workspace.created"
+command = ["./bin/pasture", "ensure"]

@@ -1,0 +1,119 @@
+# herdr-pasture
+
+A [herdr](https://herdr.dev) plugin that docks a narrow pane on the left edge of
+every tab listing your running agent panes, grouped by git repository. Click a
+row to jump to that agent; click a group header to collapse it.
+
+```
+ herdr-pasture
+›▾ global-sourcing-tool
+   ◐ watchdog techcrunch ingestion…
+   ○ Notion-research plist設定
+ ▾ polala
+   ✓ [feat/email] email feature #206
+ ▸ herdr-pasture
+```
+
+- `◐` working, `○` idle, `✓` done, `●` blocked, `?` unknown.
+- The focused agent's row is drawn in reverse video.
+- Worktrees are folded into their main repository and show their branch as
+  `[branch]` before the title.
+- Panes without an agent are not listed, and neither are pasture's own panes.
+- The title bar shows `disconnected` when `herdr api snapshot` is failing; the
+  last known list stays on screen until herdr answers again.
+
+## Install
+
+```bash
+herdr plugin install ayumu-1212/herdr-pasture
+```
+
+Requires herdr >= 0.8.0 and Go >= 1.22 (the build step compiles the binary).
+macOS and Linux.
+
+### Local development
+
+```bash
+git clone https://github.com/ayumu-1212/herdr-pasture
+cd herdr-pasture
+sh scripts/build.sh          # -> bin/pasture
+herdr plugin link "$PWD"
+```
+
+`scripts/build.sh` is what the manifest's `[[build]]` step runs, so a linked
+checkout and an installed plugin behave identically. After rebuilding, run the
+`redeploy` action so the panes respawn on the new binary.
+
+## Usage
+
+The pane appears automatically when a tab or workspace is created, and when a
+tab or pane is focused. Two actions are exposed:
+
+- `herdr-pasture.toggle` — close the pane in the current tab (it stays closed,
+  "snoozed", until you toggle again) or open it. This works even with
+  `auto_open = false`.
+- `herdr-pasture.redeploy` — close every pasture pane and clear every snooze so
+  they respawn on the latest build.
+
+Bind the toggle in `~/.config/herdr/config.toml`:
+
+```toml
+[[keys.command]]
+key = "prefix+g"
+type = "shell"
+command = "herdr plugin action invoke herdr-pasture.toggle"
+description = "toggle pasture"
+```
+
+Both actions exit non-zero when the work did not happen — herdr unreachable, or
+another pasture process still holding the tab's lock while it starts a pane. The
+message on stderr names the busy tabs; the fix is to invoke the action again a
+moment later. Automatic docking (`ensure`) stays silent for its expected
+conditions (auto_open off, snoozed tab, contended lock) and only fails when
+herdr itself is unreachable.
+
+### Keys inside the pane
+
+| Key | Action |
+| --- | --- |
+| `↑` / `k`, `↓` / `j` | move the cursor |
+| `Enter` | focus the selected agent, or collapse/expand a group header |
+| `Space` | collapse/expand the selected group header |
+| `r` | refresh now |
+| `q` / `Ctrl-C` | quit the pane |
+| left click | focus that agent, or collapse/expand that header |
+| wheel | scroll the list |
+
+## Configuration
+
+`$(herdr plugin config-dir herdr-pasture)/config.toml` — the file is optional
+and so is every key:
+
+```toml
+auto_open = true          # false: never auto-dock; use the toggle action
+width_ratio = 0.25        # share of the tab width (0.1–0.5)
+poll_interval_ms = 1000   # how often to read `herdr api snapshot` (min 100)
+exclude = ["~/tmp/**"]    # hide panes whose cwd matches
+```
+
+`exclude` patterns expand a leading `~` and `$VARS`. A trailing `/**` matches the
+directory and everything under it; anything else is a `filepath.Match` glob
+against the whole cwd. Out-of-range or unparseable values fall back to the
+defaults above and print a warning on stderr rather than failing the command.
+
+Outside herdr (no `HERDR_PLUGIN_CONFIG_DIR`) the config is read from
+`~/.config/herdr-pasture/config.toml`.
+
+## Known limitations
+
+- Snooze state is keyed by tab id and shared across named herdr sessions, so
+  two sessions that reuse a tab id share its snooze.
+- If the leftmost column of a tab is stacked, the pane takes the tallest pane's
+  height rather than the full tab height.
+- If the tab layout is unavailable at the moment an event fires, that tab is
+  left undocked until the next event rather than docked in the wrong place.
+- Panes spawned by herdr do not inherit `HERDR_BIN_PATH`, so `herdr` must be on
+  `PATH` inside your shell for the pane's poll loop to work.
+- Repository lookups are cached for the life of the pane process; moving or
+  re-pointing a worktree is picked up after a `redeploy`.
+- A pane manually renamed `pasture` is adopted (and closed) as one of ours.
