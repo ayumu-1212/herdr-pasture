@@ -63,11 +63,11 @@ func Ensure(d Deps, tabID string) error {
 		d.logf("auto_open is false; skipping")
 		return nil
 	}
-	panes, err := d.Client.PaneList()
-	if err != nil {
-		return err
-	}
 	if tabID == "" {
+		panes, err := d.Client.PaneList()
+		if err != nil {
+			return err
+		}
 		tabID = focusedTab(panes)
 	}
 	if tabID == "" {
@@ -80,11 +80,19 @@ func Ensure(d Deps, tabID string) error {
 		return nil
 	}
 	defer unlock()
-	return open(d, panes, tabID)
+	return open(d, tabID)
 }
 
-// open assumes the lock is held.
-func open(d Deps, panes []snapshot.Pane, tabID string) error {
+// open assumes the lock is held. It reads the pane list itself rather than
+// taking one from the caller: every herdr event runs `pasture ensure` as its
+// own process, so a list read before the lock can be stale by the time the
+// lock is held (the process that went first may already have docked this tab)
+// and deciding from it would open a second pane in the same tab.
+func open(d Deps, tabID string) error {
+	panes, err := d.Client.PaneList()
+	if err != nil {
+		return err
+	}
 	live, corpses := classify(panes, tabID)
 	if live != "" {
 		return nil
@@ -96,7 +104,6 @@ func open(d Deps, panes []snapshot.Pane, tabID string) error {
 		}
 	}
 	if len(corpses) > 0 {
-		var err error
 		if panes, err = d.Client.PaneList(); err != nil {
 			return err
 		}
@@ -145,7 +152,10 @@ func open(d Deps, panes []snapshot.Pane, tabID string) error {
 }
 
 // Toggle closes the tab's live pasture pane (and snoozes the tab) or opens one
-// (clearing the snooze).
+// (clearing the snooze). Its open branch deliberately skips the auto_open gate
+// that Ensure applies: auto_open only governs automatic docking, so an explicit
+// toggle must still open the dock when the user has turned automatic docking
+// off. The open branch re-reads the pane list under the lock; see open.
 func Toggle(d Deps, tabID string) error {
 	panes, err := d.Client.PaneList()
 	if err != nil {
@@ -173,7 +183,7 @@ func Toggle(d Deps, tabID string) error {
 		return nil
 	}
 	defer unlock()
-	return open(d, panes, tabID)
+	return open(d, tabID)
 }
 
 // Redeploy closes every pasture pane (live or dead) and clears all snoozes so

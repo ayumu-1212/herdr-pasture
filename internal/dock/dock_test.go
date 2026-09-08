@@ -30,11 +30,20 @@ type fakeClient struct {
 	// stampTokenOnList makes the next PaneList show the token on nextID,
 	// simulating the UI process stamping itself.
 	stampTokenOnList bool
+	// listN counts PaneList calls; beforeList runs at the start of the listN'th
+	// call, so a test can mutate the world between two reads the way a
+	// concurrent `pasture ensure` process would.
+	listN      int
+	beforeList func(f *fakeClient, n int)
 }
 
 func (f *fakeClient) rec(name string, args ...string) { f.calls = append(f.calls, call{name, args}) }
 
 func (f *fakeClient) PaneList() ([]snapshot.Pane, error) {
+	f.listN++
+	if f.beforeList != nil {
+		f.beforeList(f, f.listN)
+	}
 	if f.stampTokenOnList {
 		for i := range f.panes {
 			if f.panes[i].PaneID == f.nextID {
@@ -217,6 +226,34 @@ func TestEnsureFallsBackToFocusedTab(t *testing.T) {
 	}
 	if len(c.calls) == 0 || c.calls[0].Args[0] != "w1:p1" {
 		t.Fatalf("calls = %v", c.calls)
+	}
+}
+
+// Each herdr event runs `pasture ensure` as its own OS process, so a decision
+// made from a pane list read BEFORE the lock is stale by the time the lock is
+// held: the process that held the lock first may already have docked this tab.
+// The list that decides must therefore be read under the lock.
+func TestEnsureDecidesFromPaneListReadUnderTheLock(t *testing.T) {
+	c := oneTab()
+	// Between the pre-lock read that resolves the focused tab and the read
+	// taken under the lock, another pasture process wins the race and docks
+	// this tab.
+	c.beforeList = func(f *fakeClient, n int) {
+		if n == 2 {
+			f.panes = append(f.panes, snapshot.Pane{
+				PaneID: "w1:p7", TabID: "w1:t1", Label: Label,
+				Tokens: map[string]string{Token: "77"},
+			})
+		}
+	}
+	if err := Ensure(deps(t, c), ""); err != nil {
+		t.Fatal(err)
+	}
+	if len(c.calls) != 0 {
+		t.Fatalf("another process already docked this tab; expected no calls, got %v", names(c.calls))
+	}
+	if c.listN < 2 {
+		t.Fatalf("PaneList called %d time(s); the deciding read must happen under the lock", c.listN)
 	}
 }
 
