@@ -1,6 +1,6 @@
 id = "herdr-pasture"
 name = "Pasture"
-version = "0.2.1"
+version = "0.3.0"
 min_herdr_version = "0.8.0"
 description = "Agents grouped by repository, docked on the left of every tab"
 platforms = ["macos", "linux"]

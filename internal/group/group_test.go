@@ -332,3 +332,46 @@ func TestBuildOrdersAgentAndWorkspaceRowsDeterministically(t *testing.T) {
 		t.Fatalf("workspace 1's agent must sort before workspace 2's row: %+v", gs[0].Rows)
 	}
 }
+
+func TestBuildStripsAStatusGlyphHerdrLeftInTheTitle(t *testing.T) {
+	// herdr sometimes reports a title that already carries its own status
+	// glyph, and rendering our icon in front of it showed the mark twice.
+	s := snapshot.Snapshot{
+		Workspaces: []snapshot.Workspace{{WorkspaceID: "w1", Number: 1, Label: "a"}},
+		Panes: []snapshot.Pane{
+			pane("w1:p1", "w1", "/r", "claude", "working", "◐ Herdr plugin work"),
+			pane("w1:p2", "w1", "/r", "claude", "done", "✓ finished"),
+			pane("w1:p3", "w1", "/r", "claude", "idle", "○no space after the glyph"),
+		},
+	}
+	gs := Build(s, mapResolver{"/r": {Root: "/r"}}, Options{})
+	got := []string{}
+	for _, r := range gs[0].Rows {
+		got = append(got, r.Title)
+	}
+	// The third keeps its glyph: only a glyph followed by a space is herdr's
+	// marker, so a title that merely begins with one is left alone.
+	want := []string{"Herdr plugin work", "finished", "○no space after the glyph"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("titles = %q, want %q", got, want)
+	}
+}
+
+func TestBuildKeepsATitleThatOnlyLooksLikeAGlyph(t *testing.T) {
+	s := snapshot.Snapshot{
+		Workspaces: []snapshot.Workspace{{WorkspaceID: "w1", Number: 1, Label: "a"}},
+		Panes: []snapshot.Pane{
+			pane("w1:p1", "w1", "/r", "claude", "idle", "◐"),
+			pane("w1:p2", "w1", "/r", "claude", "idle", "normal title"),
+		},
+	}
+	gs := Build(s, mapResolver{"/r": {Root: "/r"}}, Options{})
+	// A title that is nothing but a glyph would strip to empty, so it is kept
+	// and the agent fallback never kicks in on a title that really existed.
+	if gs[0].Rows[0].Title != "◐" {
+		t.Fatalf("row 0 title = %q", gs[0].Rows[0].Title)
+	}
+	if gs[0].Rows[1].Title != "normal title" {
+		t.Fatalf("row 1 title = %q", gs[0].Rows[1].Title)
+	}
+}

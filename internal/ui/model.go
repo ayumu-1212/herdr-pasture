@@ -180,13 +180,34 @@ func (m Model) activate(idx int) (Model, tea.Cmd) {
 	l := ls[idx]
 	g := m.groups[l.group]
 	if l.header {
+		// A group holding nothing but one bare workspace prints its name twice,
+		// once as the header and once as the row, and the header is the more
+		// obvious thing to click. Collapsing it would only hide that one
+		// duplicate line, so the header goes to the workspace instead.
+		if row, ok := soleWorkspace(g); ok {
+			return m, focusCmd(m.fetch, row)
+		}
 		m.collapsed[g.Key] = !m.collapsed[g.Key]
 		m.clampCursor()
 		return m, nil
 	}
-	row := g.Rows[l.row]
-	fetch := m.fetch
-	return m, func() tea.Msg {
+	return m, focusCmd(m.fetch, g.Rows[l.row])
+}
+
+// soleWorkspace reports the row of a group whose only content is one workspace
+// with no agent running in it. Such a group shows its name on both the header
+// and the row, so both should go to the workspace.
+func soleWorkspace(g group.Group) (group.Row, bool) {
+	if len(g.Rows) == 1 && g.Rows[0].Kind == group.RowWorkspace {
+		return g.Rows[0], true
+	}
+	return group.Row{}, false
+}
+
+// focusCmd focuses whatever a row stands for. The row is captured by value:
+// the command runs on its own goroutine and must not read the model.
+func focusCmd(fetch Fetcher, row group.Row) tea.Cmd {
+	return func() tea.Msg {
 		// A row that has vanished simply disappears on the next poll, so
 		// neither error is worth surfacing.
 		if row.Kind == group.RowWorkspace {

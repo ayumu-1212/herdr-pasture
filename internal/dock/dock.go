@@ -267,10 +267,16 @@ func openLocked(d Deps, tabID string) error {
 	// WidthRatio and swapping the new pane leftwards lands the dock in a slot
 	// exactly WidthRatio wide. Do not "fix" this to 1-WidthRatio.
 	//
-	// A column target overrides the ratio by converting to the same thing.
+	// Both settings describe the dock's share of the TAB, so they are turned
+	// into columns first and then into a ratio of the anchor, which is what
+	// --ratio actually measures.
 	ratio := d.Cfg.WidthRatio
-	if d.Cfg.WidthColumns > 0 && layout.Area.Width > 0 {
-		ratio = float64(targetColumns(d.Cfg.WidthColumns, layout.Area.Width)) / float64(layout.Area.Width)
+	if aw := anchorWidth(layout, anchor.PaneID); aw > 0 && layout.Area.Width > 0 {
+		want := d.Cfg.WidthColumns
+		if want <= 0 {
+			want = int(float64(layout.Area.Width)*d.Cfg.WidthRatio + 0.5)
+		}
+		ratio = splitRatio(want, aw)
 	}
 	newID, err := d.Client.Split(anchor.PaneID, ratio, anchor.Cwd, env)
 	if err != nil {
@@ -311,6 +317,49 @@ func reap(d Deps, paneID string) {
 // minColumns is the narrowest the list stays readable at. The UI applies the
 // same floor when it has no size yet.
 const minColumns = 22
+
+// dockColumns clamps a wanted dock width to what the pane being split can give
+// it: never below minColumns, and never more than half that pane, so the pane
+// the dock is carved out of stays usable. On an anchor too narrow for both
+// rules the floor wins and the dock takes more than half rather than becoming
+// unreadable.
+func dockColumns(want, anchorWidth int) int {
+	limit := anchorWidth / 2
+	if limit < minColumns {
+		limit = minColumns
+	}
+	if want > limit {
+		return limit
+	}
+	if want < minColumns {
+		return minColumns
+	}
+	return want
+}
+
+// splitRatio turns a wanted dock width in columns into the --ratio to hand
+// herdr. The ratio is a share of the PANE BEING SPLIT, not of the tab: a tab
+// already split in half gives its leftmost pane only half the width, and asking
+// for 0.25 there produced a dock a quarter of that pane, an eighth of the tab.
+// Verified live on a 348-column tab split in half: the dock came out 44 columns
+// where width_ratio 0.25 promised 87.
+func splitRatio(wantColumns, anchorWidth int) float64 {
+	if anchorWidth <= 0 {
+		return 0
+	}
+	return float64(dockColumns(wantColumns, anchorWidth)) / float64(anchorWidth)
+}
+
+// anchorWidth returns the width of paneID in layout, or 0 when the layout does
+// not mention it.
+func anchorWidth(layout snapshot.Layout, paneID string) int {
+	for _, lp := range layout.Panes {
+		if lp.PaneID == paneID {
+			return lp.Rect.Width
+		}
+	}
+	return 0
+}
 
 // targetColumns clamps a configured column count to what a tab of tabWidth can
 // actually give the dock: never below minColumns, and never more than half the
