@@ -4,7 +4,7 @@
 //	pasture ensure    make sure the current tab has a pasture pane (event hook)
 //	pasture startup   restore docks a server restart left dead (startup hook)
 //	pasture toggle    open/close the pasture pane in the current tab (action)
-//	pasture redeploy  close every pasture pane so they respawn on the next focus
+//	pasture redeploy  rebuild every pasture pane on the current build
 //	pasture version   print the plugin version
 package main
 
@@ -26,7 +26,7 @@ import (
 
 // version must match herdr-plugin.toml's version field: `herdr plugin list`
 // reports the manifest's, and `pasture version` reports this one.
-const version = "0.3.3"
+const version = "0.3.4"
 
 const usage = "usage: pasture <ui|ensure|startup|toggle|redeploy|version>"
 

@@ -51,7 +51,9 @@ herdr plugin action invoke herdr-pasture.redeploy
 `uninstall` removes the plugin's code, not its config: your `config.toml` lives
 in the herdr-managed config directory and is kept. The `redeploy` at the end
 matters — panes opened by the old version keep running the old binary until they
-are closed, and redeploy closes them all so the next focus event respawns them.
+are closed, and redeploy closes each one and builds its replacement straight
+away, so when the action returns every dock is on the new build. Nothing else to
+press.
 
 Check what you have with `herdr plugin list`, which reports the manifest's
 version. `herdr plugin install --ref <tag>` pins a specific release.
@@ -72,13 +74,16 @@ checkout and an installed plugin behave identically. After rebuilding, run the
 ## Usage
 
 The pane appears automatically when a tab or workspace is created, and when a
-tab or pane is focused. Two actions are exposed:
+tab or pane is focused **over the API** — see the note on focus events under
+Known limitations, because moving around inside the herdr TUI is not that. Two
+actions are exposed:
 
 - `herdr-pasture.toggle` — close the pane in the current tab (it stays closed,
   "snoozed", until you toggle again) or open it. This works even with
   `auto_open = false`.
-- `herdr-pasture.redeploy` — close every pasture pane and clear every snooze so
-  they respawn on the latest build.
+- `herdr-pasture.redeploy` — clear every snooze, then close each pasture pane and
+  build its replacement on the current binary. It leaves the focus in the tab you
+  were in.
 
 Bind the toggle in `~/.config/herdr/config.toml`:
 
@@ -180,6 +185,15 @@ leftmost column. The change takes effect on the next herdr launch.
   shell, because the pane comes back but the process in it does not. The
   `[[startup]]` hook runs the UI in those panes again straight away, so the dock
   is back before you touch anything.
+- herdr 0.9 publishes no plugin event for the user moving around its TUI.
+  Verified on 0.9.0: switching workspace or tab from the keyboard logs
+  `workspace.focus` and `tab.focus` in the server and invokes no hook at all,
+  while the same focus issued over the socket API (`herdr tab focus …`) invokes
+  both `tab.focused` and `pane.focused`. So `auto_open` really means "on a tab or
+  workspace being created, on an API focus, and on the actions" — walking to an
+  undocked tab in the TUI will not dock it. `prefix`-bound `toggle` is the answer
+  for a one-off; `redeploy` rebuilds the lot and is why it no longer waits for an
+  event that may never arrive.
 - Docking a tab moves the focus to the pane the dock is carved out of. On the
   tabs this happens on — a tab that has no dock yet, so almost always a fresh
   one with a single pane — that pane is the focused one already and nothing
@@ -214,6 +228,13 @@ v0.3 was verified on 0.9.0 too: on a 120-column tab already split in half, the
 dock came out 30 columns, a quarter of the tab, where the old arithmetic gave
 15; a workspace-only group rendered its header without a chevron; and a
 synthetic click on that header moved the focused workspace.
+
+v0.3.4 was verified on 0.9.0 against a live session of seven docked workspaces:
+one `redeploy` closed and rebuilt all seven in place — fresh pane ids, every one
+of them live — with no focus event in between, where the old behaviour left the
+session with no docks at all until something created a tab. The focus stayed on
+`w8:p1`, the pane it was on before, and the client's view stayed on w8 rather than
+following the last tab rebuilt.
 
 v0.3.3 was verified on 0.9.0 against the live installed plugin: `pane swap`
 focuses whichever pane it is handed as `--source-pane` (an unfocused pane named
