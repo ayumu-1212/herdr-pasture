@@ -250,11 +250,39 @@ func TestEnsureOpensDockOnLeftOfLeftmostPane(t *testing.T) {
 	if c.calls[1].Args[0] != "w1:p9" || c.calls[1].Args[1] != Label {
 		t.Fatalf("rename args = %v", c.calls[1].Args)
 	}
-	if c.calls[2].Args[0] != "w1:p9" || c.calls[2].Args[1] != "w1:p1" {
-		t.Fatalf("swap args = %v", c.calls[2].Args)
-	}
 	if c.calls[3].Args[1] != "'/opt/pasture' ui" {
 		t.Fatalf("run command = %q", c.calls[3].Args[1])
+	}
+}
+
+// `herdr pane swap` focuses whichever pane it is handed as --source-pane, so the
+// ANCHOR has to be the source. Naming the dock there undoes the split's
+// --no-focus and leaves the user typing into the list: on a workspace created
+// with --focus (a "new workspace + agent" keybinding) the dock, not the agent,
+// came up active. Verified against herdr 0.9.0 on a live session: swapping an
+// unfocused pane in as the source moved focused_pane_id onto it, while a focused
+// pane named as the source kept focus even though the swap moved it to the other
+// slot. The geometry is symmetric, so the dock lands on the left either way.
+func TestEnsureSwapsTheAnchorInAsSourceSoTheDockNeverTakesFocus(t *testing.T) {
+	c := oneTab()
+	if err := Ensure(deps(t, c), "w1:t1"); err != nil {
+		t.Fatal(err)
+	}
+	var swap call
+	found := false
+	for _, got := range c.calls {
+		if got.Name == "swap" {
+			swap, found = got, true
+		}
+	}
+	if !found {
+		t.Fatalf("no swap among %v", names(c.calls))
+	}
+	if swap.Args[0] != "w1:p1" {
+		t.Fatalf("swap source = %q, want the anchor %q; herdr focuses the source pane", swap.Args[0], "w1:p1")
+	}
+	if swap.Args[1] != "w1:p9" {
+		t.Fatalf("swap target = %q, want the new dock pane %q", swap.Args[1], "w1:p9")
 	}
 }
 

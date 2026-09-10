@@ -107,7 +107,10 @@ func (c *Client) Split(paneID string, ratio float64, cwd string, env map[string]
 	return snapshot.DecodeSplit(out)
 }
 
-// Swap exchanges the positions of two panes.
+// Swap exchanges the positions of two panes. Verified against herdr 0.9.0: the
+// exchange itself is symmetric, but the call also FOCUSES source, whether or not
+// it was focused before. So source is the pane the caller wants to end up active,
+// not "the one being moved".
 func (c *Client) Swap(source, target string) error {
 	_, err := c.r.Run("pane", "swap", "--source-pane", source, "--target-pane", target)
 	return err
