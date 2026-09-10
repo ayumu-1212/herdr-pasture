@@ -115,6 +115,11 @@ func (f *fakeClient) Swap(source, target string) error {
 	return f.errs["swap"]
 }
 
+func (f *fakeClient) FocusTab(tabID string) error {
+	f.rec("focustab", tabID)
+	return f.errs["focustab"]
+}
+
 func (f *fakeClient) RunInPane(paneID, command string) error {
 	f.rec("run", paneID, command)
 	if err := f.errs["run"]; err != nil {
@@ -718,7 +723,17 @@ func TestToggleOpensEvenWithAutoOpenOff(t *testing.T) {
 	}
 }
 
-func TestRedeployClosesAllDocksAndClearsSnooze(t *testing.T) {
+// Redeploy rebuilds each dock it closed, under the same lock, rather than
+// leaving it to the next event. herdr 0.9 publishes no plugin event when the
+// user moves around the TUI — verified on 0.9.0: switching workspace logs
+// `workspace.focus` and `tab.focus` in the server but invokes no hook, while the
+// same focus issued over the API does — so "the next focus event respawns them"
+// could mean never, and a redeploy left the session with no docks at all until
+// something created a tab.
+//
+// w2:t1 holds nothing but its corpse, so closing it empties the tab and the
+// rebuild there finds no pane to split: one close, no split.
+func TestRedeployRebuildsEachDockItClosedAndClearsSnooze(t *testing.T) {
 	c := oneTab()
 	c.panes = append(c.panes,
 		snapshot.Pane{PaneID: "w1:p5", TabID: "w1:t1", Label: Label, Tokens: map[string]string{Token: "77"}},
@@ -734,14 +749,95 @@ func TestRedeployClosesAllDocksAndClearsSnooze(t *testing.T) {
 	if err := Redeploy(d); err != nil {
 		t.Fatal(err)
 	}
-	if !equal(names(c.calls), []string{"close", "close"}) {
-		t.Fatalf("calls = %v", names(c.calls))
+	// w2:t1 goes first because the focused tab is rebuilt last, and its close is
+	// all it gets. Then w1:t1: close the live dock, build a fresh one.
+	want := []string{"close", "close", "split", "rename", "swap", "run", "focustab"}
+	if !equal(names(c.calls), want) {
+		t.Fatalf("calls = %v, want %v", names(c.calls), want)
+	}
+	if c.calls[0].Args[0] != "w2:p3" || c.calls[1].Args[0] != "w1:p5" {
+		t.Fatalf("closed %q then %q, want w2:p3 then w1:p5", c.calls[0].Args[0], c.calls[1].Args[0])
+	}
+	if c.calls[2].Args[0] != "w1:p1" {
+		t.Fatalf("split %v, want the leftmost pane w1:p1", c.calls[2].Args)
 	}
 	if _, err := os.Stat(filepath.Join(d.StateDir, "snooze")); err == nil {
 		t.Fatal("snooze dir should be removed")
 	}
 	if _, err := os.Stat(lockDir(d)); err == nil {
 		t.Fatal("Redeploy should release the locks it took")
+	}
+}
+
+// Every rebuild's `pane swap` focuses the tab it happens in, so the order of the
+// pass decides where the user ends up. Verified on herdr 0.9.0: a redeploy over
+// seven tabs left both the server focus and the client's view in the last tab it
+// touched, nowhere near where the user had been.
+func TestRedeployLeavesTheFocusInTheTabTheUserWasIn(t *testing.T) {
+	c := oneTab()
+	// The user is in w2:t1; w1:t1 is some other tab that also carries a dock.
+	c.panes[0].Focused = false
+	c.panes = append(c.panes,
+		snapshot.Pane{PaneID: "w1:p5", TabID: "w1:t1", Label: Label, Tokens: map[string]string{Token: "77"}},
+		snapshot.Pane{PaneID: "w2:p1", TabID: "w2:t1", WorkspaceID: "w2", Cwd: "/r", Focused: true},
+		snapshot.Pane{PaneID: "w2:p3", TabID: "w2:t1", Label: Label, Tokens: map[string]string{Token: "78"}},
+	)
+	c.layouts = map[string]snapshot.Layout{
+		"w1:t1": c.layout,
+		"w2:t1": {TabID: "w2:t1", Panes: []snapshot.LayoutPane{
+			{PaneID: "w2:p1", Rect: snapshot.Rect{X: 0, Y: 1, Width: 100, Height: 40}},
+		}},
+	}
+	d := deps(t, c)
+	if err := Redeploy(d); err != nil {
+		t.Fatal(err)
+	}
+	var order []string
+	for _, got := range c.calls {
+		if got.Name == "split" {
+			order = append(order, got.Args[0])
+		}
+	}
+	if !equal(order, []string{"w1:p1", "w2:p1"}) {
+		t.Fatalf("split order = %v, want w1:t1 rebuilt before the focused tab w2:t1", order)
+	}
+	last := c.calls[len(c.calls)-1]
+	if last.Name != "focustab" || last.Args[0] != "w2:t1" {
+		t.Fatalf("last call = %v %v, want focustab w2:t1", last.Name, last.Args)
+	}
+}
+
+// Nothing to redeploy means nothing to put the focus back to, so the focus is
+// left strictly alone.
+func TestRedeployWithNoDocksTouchesNothing(t *testing.T) {
+	c := oneTab()
+	if err := Redeploy(deps(t, c)); err != nil {
+		t.Fatal(err)
+	}
+	if len(c.calls) != 0 {
+		t.Fatalf("calls = %v, want none", names(c.calls))
+	}
+}
+
+// The snoozes have to go before the rebuild, not after it: openLocked skips a
+// snoozed tab, so clearing them last would leave exactly the tabs a redeploy is
+// meant to refresh with no dock at all.
+func TestRedeployClearsSnoozeBeforeRebuilding(t *testing.T) {
+	c := oneTab()
+	c.panes = append(c.panes, snapshot.Pane{PaneID: "w1:p5", TabID: "w1:t1", Label: Label, Tokens: map[string]string{Token: "77"}})
+	d := deps(t, c)
+	if err := os.MkdirAll(filepath.Join(d.StateDir, "snooze"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(d.StateDir, "snooze", "w1_t1"), nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := Redeploy(d); err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"close", "split", "rename", "swap", "run", "focustab"}
+	if !equal(names(c.calls), want) {
+		t.Fatalf("calls = %v, want %v: a snoozed tab must still be rebuilt", names(c.calls), want)
 	}
 }
 
@@ -762,7 +858,10 @@ func TestRedeployLeavesBusyTabsAloneAndSaysSo(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "w1:t1") {
 		t.Fatalf("err = %v, want it to name the skipped tab w1:t1", err)
 	}
-	if !equal(names(c.calls), []string{"close"}) || c.calls[0].Args[0] != "w2:p3" {
+	// The idle tab's pane is closed (and its tab has nothing left to split), and
+	// the focus still goes back to where the user was even though their own tab
+	// was the busy one.
+	if !equal(names(c.calls), []string{"close", "focustab"}) || c.calls[0].Args[0] != "w2:p3" {
 		t.Fatalf("calls = %v, want only the idle tab's pane closed", c.calls)
 	}
 }

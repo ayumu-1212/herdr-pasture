@@ -50,6 +50,7 @@ type Client interface {
 	Rename(paneID, label string) error
 	Close(paneID string) error
 	Resize(paneID string, amount float64) error
+	FocusTab(tabID string) error
 }
 
 // Deps bundles everything the dock operations need; tests inject fakes.
@@ -464,13 +465,25 @@ func Toggle(d Deps, tabID string) error {
 	return openLocked(d, tabID)
 }
 
-// Redeploy closes every pasture pane (live or dead) and clears all snoozes so
-// the next focus event respawns them on the current build. It takes each
-// affected tab's lock in turn; a tab whose lock is held is left alone and named
-// in the returned error. A builder holds the lock for at most tokenRetries *
-// tokenWait, so the right recovery is to run redeploy again in a moment, and
-// naming the tabs tells the user which ones still need it. Note the snoozes are
-// cleared even when some tabs were skipped.
+// Redeploy clears every snooze, then closes each pasture pane (live or dead) and
+// builds a fresh one in its place, so every dock ends up on the current build.
+// It takes each affected tab's lock in turn; a tab whose lock is held is left
+// alone and named in the returned error. A builder holds the lock for at most
+// tokenRetries * tokenWait, so the right recovery is to run redeploy again in a
+// moment, and naming the tabs tells the user which ones still need it.
+//
+// It rebuilds rather than waiting for a focus event to do it. herdr 0.9 does not
+// publish a plugin event for the user moving around the TUI: verified on 0.9.0,
+// switching workspace or tab logs `workspace.focus` and `tab.focus` in the server
+// and invokes no hook at all, while the same focus issued over the API invokes
+// both `tab.focused` and `pane.focused`. So "the next focus event respawns them"
+// could mean never, and a redeploy left a whole session dockless until something
+// happened to create a tab. Rebuilding here also makes the documented update
+// sequence land on the new build with nothing further to press.
+//
+// Cost: the rebuild waits for each new pane to stamp its token, so a session with
+// many docks takes a few seconds per tab. Redeploy runs from an action, off the
+// UI thread, and is rare.
 func Redeploy(d Deps) error {
 	d = d.normalize()
 	panes, err := d.Client.PaneList()
@@ -488,6 +501,20 @@ func Redeploy(d Deps) error {
 		}
 		byTab[p.TabID] = append(byTab[p.TabID], p.PaneID)
 	}
+	// Snoozes go first: openLocked skips a snoozed tab, so clearing them after
+	// the loop would leave exactly the tabs a redeploy is meant to refresh
+	// without a dock. They are cleared even when some tabs turn out to be busy.
+	if err := os.RemoveAll(filepath.Join(d.StateDir, "snooze")); err != nil {
+		return err
+	}
+	// Each rebuild's `pane swap` focuses the tab it happens in, so a plain
+	// left-to-right pass ends with the user sitting in whichever tab came last.
+	// Verified on 0.9.0: a redeploy over seven tabs moved both the server focus
+	// and the client's view to the last one. Rebuild the tab the user is in last
+	// so the focus comes to rest there, and say so again afterwards for the case
+	// where that tab has no dock to rebuild.
+	home := focusedTab(panes)
+	tabs = focusedTabLast(tabs, home)
 	var busy []string
 	for _, tab := range tabs {
 		unlock, ok := acquireLock(d, tab)
@@ -501,15 +528,47 @@ func Redeploy(d Deps) error {
 				d.logf("close %s: %v", id, err)
 			}
 		}
+		// openLocked, not open: this loop already holds tab's lock. A tab that
+		// cannot be rebuilt (its last pane was the dock, say) is logged and the
+		// rest carry on; auto_open is not consulted, for the same reason Startup
+		// does not consult it — putting back a dock the user had is not the same
+		// decision as docking a tab that never had one.
+		if err := openLocked(d, tab); err != nil {
+			d.logf("rebuilding the dock in tab %s: %v", tab, err)
+		}
 		unlock()
 	}
-	if err := os.RemoveAll(filepath.Join(d.StateDir, "snooze")); err != nil {
-		return err
+	if len(tabs) > 0 && home != "" {
+		if err := d.Client.FocusTab(home); err != nil {
+			d.logf("returning the focus to tab %s: %v", home, err)
+		}
 	}
 	if len(busy) > 0 {
 		return fmt.Errorf("redeploy: %d busy tab(s) left undisturbed: %s", len(busy), strings.Join(busy, ", "))
 	}
 	return nil
+}
+
+// focusedTabLast returns tabs with home moved to the end, order otherwise
+// preserved. A home that is not in tabs (the user's tab has no dock to rebuild)
+// leaves the order alone.
+func focusedTabLast(tabs []string, home string) []string {
+	if home == "" {
+		return tabs
+	}
+	out := make([]string, 0, len(tabs))
+	found := false
+	for _, t := range tabs {
+		if t == home {
+			found = true
+			continue
+		}
+		out = append(out, t)
+	}
+	if !found {
+		return tabs
+	}
+	return append(out, home)
 }
 
 // isPasture reports whether a pane is one of ours. It trusts the label, so a
