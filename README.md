@@ -180,6 +180,13 @@ leftmost column. The change takes effect on the next herdr launch.
   shell, because the pane comes back but the process in it does not. The
   `[[startup]]` hook runs the UI in those panes again straight away, so the dock
   is back before you touch anything.
+- Docking a tab moves the focus to the pane the dock is carved out of. On the
+  tabs this happens on — a tab that has no dock yet, so almost always a fresh
+  one with a single pane — that pane is the focused one already and nothing
+  moves. On a tab with three panes where the focus is on none of the two being
+  swapped, the focus lands on the leftmost pane: `pane swap` focuses its
+  `--source-pane`, and herdr 0.9 has no focus-a-pane-by-id command to put it
+  back.
 
 ## Tested with
 
@@ -207,3 +214,11 @@ v0.3 was verified on 0.9.0 too: on a 120-column tab already split in half, the
 dock came out 30 columns, a quarter of the tab, where the old arithmetic gave
 15; a workspace-only group rendered its header without a chevron; and a
 synthetic click on that header moved the focused workspace.
+
+v0.3.3 was verified on 0.9.0 against the live installed plugin: `pane swap`
+focuses whichever pane it is handed as `--source-pane` (an unfocused pane named
+as the source took the focus; a focused one named as the source kept it after
+being moved to the other slot), and with the anchor passed as the source a
+freshly created workspace comes up with the dock 51 columns wide on the left,
+unfocused, and `focused_pane_id` on the pane to its right — the one an agent is
+started in. Before the change that same workspace came up with the dock focused.

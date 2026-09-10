@@ -291,7 +291,13 @@ func openLocked(d Deps, tabID string) error {
 		reap(d, newID)
 		return err
 	}
-	if err := d.Client.Swap(newID, anchor.PaneID); err != nil {
+	// The anchor goes in as the SOURCE, the dock as the target. `pane swap`
+	// exchanges the two positions whichever way round they are handed over, but
+	// it also focuses the source pane, so naming the dock there threw away the
+	// split's --no-focus: on a tab created by a "new workspace + agent"
+	// keybinding the user's keystrokes landed in the list instead of the agent.
+	// Passing the anchor keeps focus where the user already was.
+	if err := d.Client.Swap(anchor.PaneID, newID); err != nil {
 		reap(d, newID)
 		return err
 	}
