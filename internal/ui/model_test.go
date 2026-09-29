@@ -625,3 +625,37 @@ func TestEnterOnAnAgentRowWithoutATabStillFocusesThePane(t *testing.T) {
 		t.Fatalf("focused = %v", f.focused)
 	}
 }
+
+type memStore struct{ set map[string]bool }
+
+func (s *memStore) Load() (map[string]bool, error) {
+	out := map[string]bool{}
+	for k, v := range s.set {
+		out[k] = v
+	}
+	return out, nil
+}
+func (s *memStore) Save(m map[string]bool) error { s.set = m; return nil }
+
+// Folding a group in one pane must show up in another pane sharing the store,
+// at its next poll, and a fold made there must not be lost by a stale toggle.
+func TestCollapseSyncsAcrossPanes(t *testing.T) {
+	store := &memStore{set: map[string]bool{}}
+	a := loaded(&fakeFetcher{}).WithStore(store)
+	b := loaded(&fakeFetcher{}).WithStore(store)
+
+	a, _ = a.activate(0) // fold /r/a in pane A
+	if !store.set["/r/a"] {
+		t.Fatalf("fold not saved: %v", store.set)
+	}
+	b, _ = b.Update(snapshotMsg{gen: b.gen, groups: twoGroups()})
+	if !b.collapsed["/r/a"] {
+		t.Fatal("pane B did not pick up the fold")
+	}
+	a, _ = a.activate(0) // unfold in A
+	b, _ = b.Update(snapshotMsg{gen: b.gen, groups: twoGroups()})
+	if b.collapsed["/r/a"] {
+		t.Fatal("pane B did not pick up the unfold")
+	}
+	_ = a
+}
