@@ -17,6 +17,7 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 
+	"github.com/ayumu-1212/herdr-pasture/internal/collapse"
 	"github.com/ayumu-1212/herdr-pasture/internal/config"
 	"github.com/ayumu-1212/herdr-pasture/internal/dock"
 	"github.com/ayumu-1212/herdr-pasture/internal/group"
@@ -152,7 +153,8 @@ func runUI(cfg config.Config, client *herdr.Client) error {
 		}()
 	}
 	opt := group.Options{SelfToken: dock.Token, Exclude: cfg.Excluded}
-	model := ui.New(client, group.NewGitResolver(), opt, time.Duration(cfg.PollIntervalMs)*time.Millisecond)
+	model := ui.New(client, group.NewGitResolver(), opt, time.Duration(cfg.PollIntervalMs)*time.Millisecond).
+		WithStore(collapse.NewFileStore(stateDir()))
 	// WithAltScreen is not cosmetic: the UI maps a click's Y to a list row
 	// assuming its own first line is row 0. dock starts it with `pane run`,
 	// which types into a live shell, so an inline frame would begin one or two

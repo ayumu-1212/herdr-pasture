@@ -2,7 +2,7 @@
 
 A [herdr](https://herdr.dev) plugin that docks a narrow pane on the left edge of
 every tab listing your running agent panes, grouped by git repository. Click a
-row to jump to that agent; click a group header to collapse it.
+row to jump to that agent; click a group header to collapse it (the fold state is shared across workspaces).
 
 ```
  herdr-pasture

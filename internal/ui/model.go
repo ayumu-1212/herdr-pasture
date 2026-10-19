@@ -18,6 +18,13 @@ type Fetcher interface {
 	FocusTab(tabID string) error
 }
 
+// Store shares the folded-group set between pasture panes. Load errors leave
+// the model's current state alone.
+type Store interface {
+	Load() (map[string]bool, error)
+	Save(map[string]bool) error
+}
+
 // Model is the bubbletea model. Copy semantics: Update returns a new value.
 type Model struct {
 	fetch    Fetcher
@@ -38,6 +45,7 @@ type Model struct {
 
 	groups       []group.Group
 	collapsed    map[string]bool
+	store        Store // nil: folds stay private to this pane
 	cursor       int
 	offset       int // index of the first list line drawn under the title bar
 	width        int
@@ -68,6 +76,24 @@ func New(f Fetcher, r group.Resolver, opt group.Options, interval time.Duration)
 		opt:       opt,
 		interval:  interval,
 		collapsed: map[string]bool{},
+	}
+}
+
+// WithStore makes the model read and write its folded groups through s, so
+// panes in other workspaces stay in step.
+func (m Model) WithStore(s Store) Model {
+	m.store = s
+	m.syncCollapsed()
+	return m
+}
+
+// syncCollapsed adopts the shared folded set, if there is one and it is readable.
+func (m *Model) syncCollapsed() {
+	if m.store == nil {
+		return
+	}
+	if c, err := m.store.Load(); err == nil {
+		m.collapsed = c
 	}
 }
 
@@ -110,6 +136,7 @@ func (m Model) Update(msg tea.Msg) (Model, tea.Cmd) {
 			m.disconnected = false
 			m.groups = msg.groups
 		}
+		m.syncCollapsed() // pick up folds made in another pane
 		m.clampCursor()
 		return m, m.tickCmd()
 	case tickMsg:
@@ -194,7 +221,13 @@ func (m Model) activate(idx int) (Model, tea.Cmd) {
 		if row, ok := soleWorkspace(g); ok {
 			return m, focusCmd(m.fetch, row)
 		}
+		// Re-read first so a fold made elsewhere since the last poll is not
+		// overwritten by this pane's stale copy.
+		m.syncCollapsed()
 		m.collapsed[g.Key] = !m.collapsed[g.Key]
+		if m.store != nil {
+			_ = m.store.Save(m.collapsed) // best effort: the fold still applies here
+		}
 		m.clampCursor()
 		return m, nil
 	}
