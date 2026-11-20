@@ -22,12 +22,13 @@ import (
 	"github.com/ayumu-1212/herdr-pasture/internal/dock"
 	"github.com/ayumu-1212/herdr-pasture/internal/group"
 	"github.com/ayumu-1212/herdr-pasture/internal/herdr"
+	"github.com/ayumu-1212/herdr-pasture/internal/mobile"
 	"github.com/ayumu-1212/herdr-pasture/internal/ui"
 )
 
 // version must match herdr-plugin.toml's version field: `herdr plugin list`
 // reports the manifest's, and `pasture version` reports this one.
-const version = "0.3.4"
+const version = "0.4.0"
 
 const usage = "usage: pasture <ui|ensure|startup|toggle|redeploy|version>"
 
@@ -154,7 +155,9 @@ func runUI(cfg config.Config, client *herdr.Client) error {
 	}
 	opt := group.Options{SelfToken: dock.Token, Exclude: cfg.Excluded}
 	model := ui.New(client, group.NewGitResolver(), opt, time.Duration(cfg.PollIntervalMs)*time.Millisecond).
-		WithStore(collapse.NewFileStore(stateDir()))
+		WithStore(collapse.NewFileStore(stateDir())).
+		WithMobile(os.Getenv("HERDR_PANE_ID"), os.Getenv("HERDR_TAB_ID"), cfg.MobileWidth,
+			mobile.Marks{Dir: stateDir()})
 	// WithAltScreen is not cosmetic: the UI maps a click's Y to a list row
 	// assuming its own first line is row 0. dock starts it with `pane run`,
 	// which types into a live shell, so an inline frame would begin one or two

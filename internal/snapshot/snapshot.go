@@ -27,6 +27,7 @@ type Workspace struct {
 	WorkspaceID string `json:"workspace_id"`
 	Number      int    `json:"number"`
 	Label       string `json:"label"`
+	ActiveTabID string `json:"active_tab_id"`
 }
 
 // Snapshot is the live session state returned by `herdr api snapshot`.
@@ -35,6 +36,21 @@ type Snapshot struct {
 	Workspaces         []Workspace `json:"workspaces"`
 	FocusedPaneID      string      `json:"focused_pane_id"`
 	FocusedWorkspaceID string      `json:"focused_workspace_id"`
+	FocusedTabID       string      `json:"focused_tab_id"`
+	// Layouts holds every tab's geometry. Each area follows the size of the
+	// client that last attached or typed, so it is how a dock learns that the
+	// session is being looked at on a phone.
+	Layouts []Layout `json:"layouts"`
+}
+
+// Layout returns tabID's layout, or false when the snapshot has none.
+func (s Snapshot) Layout(tabID string) (Layout, bool) {
+	for _, l := range s.Layouts {
+		if l.TabID == tabID {
+			return l, true
+		}
+	}
+	return Layout{}, false
 }
 
 // Rect is a pane rectangle in terminal cells.
@@ -52,12 +68,17 @@ type LayoutPane struct {
 	Rect    Rect   `json:"rect"`
 }
 
-// Layout is the geometry of one tab returned by `herdr pane layout`.
+// Layout is the geometry of one tab, as returned by `herdr pane layout` and
+// inside `api snapshot`.
 type Layout struct {
 	TabID       string       `json:"tab_id"`
 	WorkspaceID string       `json:"workspace_id"`
 	Area        Rect         `json:"area"`
 	Panes       []LayoutPane `json:"panes"`
+	// Zoomed is per tab and lives in the server, so a zoom made while looking
+	// from a phone is still there when the desktop client looks again.
+	Zoomed        bool   `json:"zoomed"`
+	FocusedPaneID string `json:"focused_pane_id"`
 }
 
 // Decode parses the `herdr api snapshot` envelope.

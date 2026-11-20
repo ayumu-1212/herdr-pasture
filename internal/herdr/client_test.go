@@ -137,3 +137,18 @@ func TestFocusTabArgv(t *testing.T) {
 		t.Fatalf("argv = %v, want %v", r.Calls[0], want)
 	}
 }
+
+func TestZoomBuildsArgv(t *testing.T) {
+	r := &FakeRunner{}
+	c := New(r)
+	if err := c.Zoom("w1:p2", true); err != nil {
+		t.Fatal(err)
+	}
+	if err := c.Zoom("w1:p2", false); err != nil {
+		t.Fatal(err)
+	}
+	want := [][]string{{"pane", "zoom", "w1:p2", "--on"}, {"pane", "zoom", "w1:p2", "--off"}}
+	if !reflect.DeepEqual(r.Calls, want) {
+		t.Fatalf("argv = %v", r.Calls)
+	}
+}

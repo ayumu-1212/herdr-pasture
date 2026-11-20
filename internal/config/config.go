@@ -21,11 +21,15 @@ type Config struct {
 	WidthColumns   int      `toml:"width_columns"`
 	PollIntervalMs int      `toml:"poll_interval_ms"`
 	Exclude        []string `toml:"exclude"`
+	// MobileWidth is the tab width at or below which pasture behaves as a
+	// sidebar that opens and closes (by zooming) instead of a fixed column.
+	// The default matches herdr's ui.mobile_width_threshold. 0 turns it off.
+	MobileWidth int `toml:"mobile_width"`
 }
 
 // Default returns the built-in defaults.
 func Default() Config {
-	return Config{AutoOpen: true, WidthRatio: 0.25, PollIntervalMs: 1000}
+	return Config{AutoOpen: true, WidthRatio: 0.25, PollIntervalMs: 1000, MobileWidth: 64}
 }
 
 // Dir returns the directory that holds config.toml: the herdr-managed plugin
@@ -69,6 +73,10 @@ func Load(path string) (Config, []string) {
 	if cfg.WidthColumns < 0 {
 		warnings = append(warnings, fmt.Sprintf("config: width_columns %d is negative, using width_ratio", cfg.WidthColumns))
 		cfg.WidthColumns = 0
+	}
+	if cfg.MobileWidth < 0 {
+		warnings = append(warnings, fmt.Sprintf("config: mobile_width %d is negative, using 64", cfg.MobileWidth))
+		cfg.MobileWidth = 64
 	}
 	if len(cfg.Exclude) > 0 {
 		valid := cfg.Exclude[:0]

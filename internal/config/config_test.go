@@ -161,3 +161,27 @@ func TestDefaultWidthColumnsIsZero(t *testing.T) {
 		t.Fatalf("WidthColumns = %d, want 0 so width_ratio stays the default path", Default().WidthColumns)
 	}
 }
+
+func TestLoadMobileWidth(t *testing.T) {
+	if Default().MobileWidth != 64 {
+		t.Fatalf("default mobile_width = %d, want 64", Default().MobileWidth)
+	}
+	for _, tc := range []struct {
+		body     string
+		want     int
+		warnings int
+	}{
+		{"mobile_width = 80\n", 80, 0},
+		{"mobile_width = 0\n", 0, 0},
+		{"mobile_width = -1\n", 64, 1},
+	} {
+		path := filepath.Join(t.TempDir(), "config.toml")
+		if err := os.WriteFile(path, []byte(tc.body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		cfg, warnings := Load(path)
+		if cfg.MobileWidth != tc.want || len(warnings) != tc.warnings {
+			t.Errorf("%q: mobile_width = %d warnings = %v, want %d with %d warnings", tc.body, cfg.MobileWidth, warnings, tc.want, tc.warnings)
+		}
+	}
+}

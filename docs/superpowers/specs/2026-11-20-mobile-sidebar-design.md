@@ -20,9 +20,10 @@ PC で見ているときの挙動は変えない。
 
 ## 2. 検証済みの herdr の挙動（0.9.0、隔離セッション `pasture-mobile`）
 
-- `api snapshot` の `layouts[].area.width` は、最後に入力・接続したクライアントの幅に
+- `api snapshot` の `layouts[].area.width` は、最後に接続したクライアントの幅に
   追従する。スマホ（45 桁）が接続すると全タブの area が 45 になり、PC（120 桁）が
-  接続すると 120 に戻る。クライアントが切断しても最後の値が残る。
+  接続すると 120 に戻る。スマホが切断したあとは 45 のまま残ることも、前の幅に
+  戻ることもあった。戻った場合は PC 復帰の処理がその時点で走る。
 - `herdr pane zoom <pane> --on` はモバイルレイアウトでもそのペインを全幅に出す。
   ズームは各タブのサーバー状態で、PC で開き直してもズームしたまま残る。
 - ズームはそのペインにフォーカスを移す。別タブのペインをズームすると、サーバーの
@@ -47,7 +48,9 @@ PC で見ているときの挙動は変えない。
 
 ## 4. 用語
 
-- **スマホ表示**: 自分のタブの `area.width` が 1 以上かつ `mobile_width` 以下。
+- **スマホ表示**: 自分のタブの `area.x + area.width`（＝端末幅。herdr のサイドバーが
+  出ていると area はその右から始まるので、`area.width` だけではデスクトップを
+  スマホと取り違える）が `mobile_width` 以下。`area.width` が 0 なら不明として PC 表示。
   `mobile_width = 0` なら常に PC 表示（機能オフ）。
 - **サイドバーを開く**: そのタブのドックをズームする（ズームでフォーカスも移る）。
 - **サイドバーを閉じる**: そのタブのドック以外のペイン（戻り先）をズームする。
@@ -62,8 +65,8 @@ PC で見ているときの挙動は変えない。
 UI と dock の両方から使う小さな部品をまとめる。herdr は呼ばない（純粋関数＋ファイル）。
 
 ```go
-// Phone はタブ幅 width がスマホ表示かを返す。threshold<=0 は常に false。
-func Phone(width, threshold int) bool
+// Phone はタブ l を見ているクライアントがスマホ幅かを返す。threshold<=0 は常に false。
+func Phone(l snapshot.Layout, threshold int) bool
 
 // Marks は StateDir/zoomed/<tab> を読み書きする。
 type Marks struct{ Dir string }
@@ -104,7 +107,7 @@ UI は自分のペイン ID とタブ ID を `HERDR_PANE_ID` / `HERDR_TAB_ID` �
 
 ポーリングで得た snapshot から、自分のタブについて次を読み取る。
 
-- `phone`: 自分のタブの layout の `area.width` がスマホ表示か
+- `phone`: 自分のタブの layout がスマホ表示か（`Phone`）
 - `active`: `phone` かつ `focused_tab_id` が自分のタブ
 - `zoomed`、`focused_pane_id`
 
@@ -150,7 +153,7 @@ UI は自分のペイン ID とタブ ID を `HERDR_PANE_ID` / `HERDR_TAB_ID` �
 
 ### 6.3 `ensure` の幅調整
 
-`applyWidth` は layout の `area.width` がスマホ表示ならそのまま戻る。スマホ幅で分割比を
+`applyWidth` は layout がスマホ表示（`Phone`）ならそのまま戻る。スマホ幅で分割比を
 書き換えると、その比が PC 表示にも残るため。
 
 ## 7. エラー処理
@@ -163,7 +166,7 @@ UI は自分のペイン ID とタブ ID を `HERDR_PANE_ID` / `HERDR_TAB_ID` �
 
 ## 8. テスト
 
-- `mobile`: `Phone` の境界（0、閾値ちょうど、閾値+1、width 0）、`Marks` の往復、
+- `mobile`: `Phone` の境界（0、閾値ちょうど、閾値+1、width 0、サイドバー分の x）、`Marks` の往復、
   `ReturnPane` の優先順位。
 - `snapshot`: 追加フィールドのデコード。
 - `config`: `mobile_width` の既定値、負の値の警告、0。

@@ -14,6 +14,7 @@ import (
 
 	"github.com/ayumu-1212/herdr-pasture/internal/config"
 	"github.com/ayumu-1212/herdr-pasture/internal/herdr"
+	"github.com/ayumu-1212/herdr-pasture/internal/mobile"
 	"github.com/ayumu-1212/herdr-pasture/internal/snapshot"
 )
 
@@ -167,6 +168,35 @@ func (f *fakeClient) Close(paneID string) error {
 func (f *fakeClient) Resize(paneID string, amount float64) error {
 	f.rec("resize", paneID, strconv.FormatFloat(amount, 'f', 4, 64))
 	return f.errs["resize"]
+}
+
+// Zoom records the call and, like herdr, zooms and focuses the pane in its
+// tab's layout.
+func (f *fakeClient) Zoom(paneID string, on bool) error {
+	state := "off"
+	if on {
+		state = "on"
+	}
+	f.rec("zoom", paneID, state)
+	if err := f.errs["zoom"]; err != nil {
+		return err
+	}
+	apply := func(l *snapshot.Layout) {
+		l.Zoomed = on
+		l.FocusedPaneID = paneID
+	}
+	for _, p := range f.panes {
+		if p.PaneID != paneID {
+			continue
+		}
+		if l, ok := f.layouts[p.TabID]; ok {
+			apply(&l)
+			f.layouts[p.TabID] = l
+			return nil
+		}
+	}
+	apply(&f.layout)
+	return nil
 }
 
 func (f *fakeClient) has(paneID string) bool {
@@ -1146,5 +1176,144 @@ func TestDockColumnsNeverSwallowTheAnchor(t *testing.T) {
 	// Below the readable floor the floor wins, even on a narrow anchor.
 	if got := dockColumns(5, 200); got != minColumns {
 		t.Fatalf("dockColumns(5, 200) = %d, want the %d-column floor", got, minColumns)
+	}
+}
+
+// phoneTab is oneTab with a live dock (w1:p5), seen from a 45-column phone.
+func phoneTab() *fakeClient {
+	c := oneTab()
+	c.panes = append(c.panes, snapshot.Pane{PaneID: "w1:p5", TabID: "w1:t1", Label: Label, Tokens: map[string]string{Token: "77"}})
+	c.layout.Area = snapshot.Rect{Width: 45, Height: 28}
+	c.layout.Panes = []snapshot.LayoutPane{
+		{PaneID: "w1:p5", Rect: snapshot.Rect{X: 0, Width: 15, Height: 28}},
+		{PaneID: "w1:p1", Rect: snapshot.Rect{X: 15, Width: 15, Height: 28}},
+		{PaneID: "w1:p2", Rect: snapshot.Rect{X: 30, Width: 15, Height: 28}},
+	}
+	c.layout.FocusedPaneID = "w1:p2"
+	return c
+}
+
+func zoomCalls(calls []call) []string {
+	var out []string
+	for _, c := range calls {
+		if c.Name == "zoom" {
+			out = append(out, c.Args[0]+":"+c.Args[1])
+		}
+	}
+	return out
+}
+
+func TestTogglePhoneOpensTheSidebarByZoomingTheDock(t *testing.T) {
+	c := phoneTab()
+	d := deps(t, c)
+	if err := Toggle(d, "w1:t1"); err != nil {
+		t.Fatal(err)
+	}
+	if got := zoomCalls(c.calls); !equal(got, []string{"w1:p5:on"}) {
+		t.Fatalf("zooms = %v, want the dock zoomed", got)
+	}
+	for _, n := range names(c.calls) {
+		if n == "close" {
+			t.Fatalf("a phone toggle must never close the dock: %v", c.calls)
+		}
+	}
+	marks := mobile.Marks{Dir: d.StateDir}
+	if back, ok := marks.Get("w1:t1"); !ok || back != "w1:p2" {
+		t.Fatalf("mark = %q, %v; want the tab marked to return to the focused pane", back, ok)
+	}
+}
+
+func TestTogglePhoneClosesTheSidebarBackToThePaneItCameFrom(t *testing.T) {
+	c := phoneTab()
+	d := deps(t, c)
+	if err := Toggle(d, "w1:t1"); err != nil { // open from w1:p2
+		t.Fatal(err)
+	}
+	c.calls = nil
+	if err := Toggle(d, "w1:t1"); err != nil { // close
+		t.Fatal(err)
+	}
+	if got := zoomCalls(c.calls); !equal(got, []string{"w1:p2:on"}) {
+		t.Fatalf("zooms = %v, want w1:p2 zoomed again", got)
+	}
+	if back, ok := (mobile.Marks{Dir: d.StateDir}).Get("w1:t1"); !ok || back != "w1:p2" {
+		t.Fatalf("mark = %q, %v; the tab is still zoomed by pasture", back, ok)
+	}
+}
+
+func TestTogglePhoneClosingWithoutAMarkPicksTheLargestPane(t *testing.T) {
+	c := phoneTab()
+	c.layout.Panes[2].Rect.Width = 30 // w1:p2 is the big one
+	c.layout.Zoomed, c.layout.FocusedPaneID = true, "w1:p5"
+	d := deps(t, c)
+	if err := Toggle(d, "w1:t1"); err != nil {
+		t.Fatal(err)
+	}
+	if got := zoomCalls(c.calls); !equal(got, []string{"w1:p2:on"}) {
+		t.Fatalf("zooms = %v", got)
+	}
+}
+
+func TestTogglePhoneBuildsAMissingDockAndOpensIt(t *testing.T) {
+	c := oneTab()
+	c.layout.Area = snapshot.Rect{Width: 45, Height: 28}
+	c.layout.FocusedPaneID = "w1:p1"
+	c.stampAfterList = 1
+	// The split pane joins the layout the way herdr would place it.
+	c.layout.Panes = append(c.layout.Panes, snapshot.LayoutPane{PaneID: "w1:p9", Rect: snapshot.Rect{Width: 15, Height: 28}})
+	d := deps(t, c)
+	if err := os.MkdirAll(filepath.Join(d.StateDir, "snooze"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(d.StateDir, "snooze", "w1_t1"), nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := Toggle(d, "w1:t1"); err != nil {
+		t.Fatal(err)
+	}
+	got := names(c.calls)
+	if !equal(got, []string{"split", "rename", "swap", "run", "zoom"}) {
+		t.Fatalf("calls = %v", got)
+	}
+	if z := zoomCalls(c.calls); !equal(z, []string{"w1:p9:on"}) {
+		t.Fatalf("zooms = %v, want the new dock zoomed", z)
+	}
+	if snoozed(d, "w1:t1") {
+		t.Fatal("opening the sidebar must clear the snooze")
+	}
+}
+
+func TestToggleOnADesktopIgnoresMobileWidth(t *testing.T) {
+	c := phoneTab()
+	c.layout.Area = snapshot.Rect{X: 26, Width: 45, Height: 28} // herdr's sidebar is out: 71 columns
+	d := deps(t, c)
+	if err := Toggle(d, "w1:t1"); err != nil {
+		t.Fatal(err)
+	}
+	if !equal(names(c.calls), []string{"close"}) {
+		t.Fatalf("calls = %v, want the desktop toggle", c.calls)
+	}
+}
+
+func TestTogglePhoneOffWhenMobileWidthIsZero(t *testing.T) {
+	c := phoneTab()
+	d := deps(t, c)
+	d.Cfg.MobileWidth = 0
+	if err := Toggle(d, "w1:t1"); err != nil {
+		t.Fatal(err)
+	}
+	if !equal(names(c.calls), []string{"close"}) {
+		t.Fatalf("calls = %v, want the desktop toggle", c.calls)
+	}
+}
+
+func TestEnsureDoesNotResizeTheDockOnAPhone(t *testing.T) {
+	c := phoneTab()
+	d := widthDeps(t, c, 30)
+	if err := Ensure(d, "w1:t1"); err != nil {
+		t.Fatal(err)
+	}
+	if argOf(c.calls, "resize", 0) != "" {
+		t.Fatalf("a phone-width tab must keep the desktop's split ratio: %v", c.calls)
 	}
 }
