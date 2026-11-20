@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/ayumu-1212/herdr-pasture/internal/config"
+	"github.com/ayumu-1212/herdr-pasture/internal/mobile"
 	"github.com/ayumu-1212/herdr-pasture/internal/snapshot"
 )
 
@@ -51,6 +52,7 @@ type Client interface {
 	Close(paneID string) error
 	Resize(paneID string, amount float64) error
 	FocusTab(tabID string) error
+	Zoom(paneID string, on bool) error
 }
 
 // Deps bundles everything the dock operations need; tests inject fakes.
@@ -404,6 +406,13 @@ func applyWidth(d Deps, paneID, tabID string) {
 	if layout.Area.Width <= 0 {
 		return
 	}
+	// On a phone the dock is opened and closed by zooming, not seen as a
+	// column, and herdr keeps one split ratio for every client: resizing to fit
+	// width_columns into 45 columns would leave the desktop with a dock half
+	// the tab wide.
+	if mobile.Phone(layout, d.Cfg.MobileWidth) {
+		return
+	}
 	current := 0
 	for _, lp := range layout.Panes {
 		if lp.PaneID == paneID {
@@ -452,6 +461,9 @@ func Toggle(d Deps, tabID string) error {
 		return err
 	}
 	live, _ := classify(panes, tabID)
+	if layout, ok := tabLayout(d, panes, tabID); ok && mobile.Phone(layout, d.Cfg.MobileWidth) {
+		return togglePhone(d, tabID, live, layout)
+	}
 	if live != "" {
 		if err := d.Client.Close(live); err != nil {
 			return err
@@ -463,6 +475,74 @@ func Toggle(d Deps, tabID string) error {
 	}
 	// openLocked, not open: this function already holds tabID's lock.
 	return openLocked(d, tabID)
+}
+
+// togglePhone is Toggle while the tab is being looked at on a phone, where the
+// dock is a sidebar that opens and closes rather than a column. Open is the
+// dock zoomed and focused; closed is another pane zoomed. It never closes the
+// dock: closing would make every reopen wait for a new pane to start.
+//
+// The tab is marked whenever pasture zooms it, so the dock's UI can unzoom it
+// once the desktop looks again, and the mark remembers the pane to go back to.
+// The caller holds tabID's lock.
+func togglePhone(d Deps, tabID, live string, layout snapshot.Layout) error {
+	marks := mobile.Marks{Dir: d.StateDir}
+	if live == "" {
+		if err := setSnooze(d, tabID, false); err != nil {
+			return err
+		}
+		if err := openLocked(d, tabID); err != nil {
+			return err
+		}
+		panes, err := d.Client.PaneList()
+		if err != nil {
+			return err
+		}
+		if live, _ = classify(panes, tabID); live == "" {
+			return nil // openLocked logged why there is no dock
+		}
+		if layout, err = d.Client.Layout(live); err != nil {
+			return err
+		}
+	}
+	remembered, _ := marks.Get(tabID)
+	if layout.Zoomed && layout.FocusedPaneID == live {
+		target, ok := mobile.ReturnPane(layout, live, remembered)
+		if !ok {
+			d.logf("tab %s holds nothing but the dock; leaving the sidebar open", tabID)
+			return nil
+		}
+		if err := marks.Set(tabID, target); err != nil {
+			return err
+		}
+		return d.Client.Zoom(target, true)
+	}
+	back := remembered
+	if f := layout.FocusedPaneID; f != "" && f != live {
+		back = f
+	}
+	if err := marks.Set(tabID, back); err != nil {
+		return err
+	}
+	return d.Client.Zoom(live, true)
+}
+
+// tabLayout reads tabID's layout through any of its panes. It reports false
+// when the tab has no panes or herdr cannot say, and the caller then keeps to
+// the desktop behaviour.
+func tabLayout(d Deps, panes []snapshot.Pane, tabID string) (snapshot.Layout, bool) {
+	for _, p := range panes {
+		if p.TabID != tabID {
+			continue
+		}
+		l, err := d.Client.Layout(p.PaneID)
+		if err != nil {
+			d.logf("layout of tab %s unavailable (%v); treating it as a desktop", tabID, err)
+			return snapshot.Layout{}, false
+		}
+		return l, true
+	}
+	return snapshot.Layout{}, false
 }
 
 // Redeploy clears every snooze, then closes each pasture pane (live or dead) and
@@ -671,27 +751,9 @@ func hasToken(d Deps, paneID string) bool {
 	return false
 }
 
-// sanitizeID turns a herdr id into one safe filename component: everything
-// outside [A-Za-z0-9_-] becomes "_", so the ":" and "/" herdr puts in its ids
-// cannot survive, and filepath.Base is applied as a second guard against a
-// path ever escaping the state dir. Both the lock and the snooze file are
-// named through it.
-func sanitizeID(tabID string) string {
-	safe := strings.Map(func(r rune) rune {
-		switch {
-		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9', r == '_', r == '-':
-			return r
-		default:
-			return '_'
-		}
-	}, tabID)
-	if safe == "" {
-		// filepath.Base("") is ".", which would make snoozePath name the snooze
-		// directory itself.
-		safe = "_"
-	}
-	return filepath.Base(safe)
-}
+// sanitizeID names the per-tab lock and snooze files. It is mobile.SanitizeID,
+// shared so the zoom marks follow the same rule.
+func sanitizeID(tabID string) string { return mobile.SanitizeID(tabID) }
 
 func lockPath(d Deps, tabID string) string {
 	return filepath.Join(d.StateDir, "ensure."+sanitizeID(tabID)+".lock")

@@ -7,6 +7,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 
 	"github.com/ayumu-1212/herdr-pasture/internal/group"
+	"github.com/ayumu-1212/herdr-pasture/internal/mobile"
 	"github.com/ayumu-1212/herdr-pasture/internal/snapshot"
 )
 
@@ -16,6 +17,7 @@ type Fetcher interface {
 	FocusAgent(paneID string) error
 	FocusWorkspace(workspaceID string) error
 	FocusTab(tabID string) error
+	Zoom(paneID string, on bool) error
 }
 
 // Store shares the folded-group set between pasture panes. Load errors leave
@@ -51,6 +53,27 @@ type Model struct {
 	width        int
 	height       int
 	disconnected bool
+
+	// phone is the sidebar mode for a dock looked at from a phone; see
+	// WithMobile. The zero value is off.
+	phone phoneState
+}
+
+// phoneState is what the dock knows about being looked at on a phone. On a
+// phone the dock is a sidebar: zoomed is open, another pane zoomed is closed.
+type phoneState struct {
+	selfPane, selfTab string
+	threshold         int
+	marks             mobile.Marks
+
+	seen   bool // at least one snapshot showed this dock's tab
+	phone  bool // this dock's tab is phone-sized
+	active bool // phone, and this dock's tab has the focus
+	last   snapshot.Snapshot
+}
+
+func (p phoneState) enabled() bool {
+	return p.selfPane != "" && p.selfTab != "" && p.threshold > 0 && p.marks.Dir != ""
 }
 
 // line is one screen row below the title bar.
@@ -63,6 +86,7 @@ type line struct {
 type snapshotMsg struct {
 	gen    int
 	groups []group.Group
+	snap   snapshot.Snapshot
 	err    error
 }
 
@@ -84,6 +108,16 @@ func New(f Fetcher, r group.Resolver, opt group.Options, interval time.Duration)
 func (m Model) WithStore(s Store) Model {
 	m.store = s
 	m.syncCollapsed()
+	return m
+}
+
+// WithMobile turns on the phone sidebar for the dock running in selfPane of
+// selfTab: when that tab is no wider than threshold columns, the dock opens by
+// zooming itself and closes by zooming the row it is asked to go to. Tabs it
+// zooms are recorded in marks so it can unzoom them once a desktop looks again.
+// An empty id or a threshold of 0 leaves it off.
+func (m Model) WithMobile(selfPane, selfTab string, threshold int, marks mobile.Marks) Model {
+	m.phone = phoneState{selfPane: selfPane, selfTab: selfTab, threshold: threshold, marks: marks}
 	return m
 }
 
@@ -109,7 +143,7 @@ func (m Model) fetchCmd() tea.Cmd {
 		if err != nil {
 			return snapshotMsg{gen: gen, err: err}
 		}
-		return snapshotMsg{gen: gen, groups: group.Build(s, resolver, opt)}
+		return snapshotMsg{gen: gen, groups: group.Build(s, resolver, opt), snap: s}
 	}
 }
 
@@ -130,15 +164,17 @@ func (m Model) Update(msg tea.Msg) (Model, tea.Cmd) {
 		if msg.gen != m.gen {
 			return m, nil // a retired chain's result: drop it, don't re-arm
 		}
+		var phoneCmd tea.Cmd
 		if msg.err != nil {
 			m.disconnected = true
 		} else {
 			m.disconnected = false
 			m.groups = msg.groups
+			phoneCmd = m.observe(msg.snap)
 		}
 		m.syncCollapsed() // pick up folds made in another pane
 		m.clampCursor()
-		return m, m.tickCmd()
+		return m, tea.Batch(phoneCmd, m.tickCmd())
 	case tickMsg:
 		if msg.gen != m.gen {
 			return m, nil // a retired chain's tick: let it die here
@@ -219,7 +255,7 @@ func (m Model) activate(idx int) (Model, tea.Cmd) {
 		// obvious thing to click. Collapsing it would only hide that one
 		// duplicate line, so the header goes to the workspace instead.
 		if row, ok := soleWorkspace(g); ok {
-			return m, focusCmd(m.fetch, row)
+			return m, m.goCmd(row)
 		}
 		// Re-read first so a fold made elsewhere since the last poll is not
 		// overwritten by this pane's stale copy.
@@ -231,7 +267,118 @@ func (m Model) activate(idx int) (Model, tea.Cmd) {
 		m.clampCursor()
 		return m, nil
 	}
-	return m, focusCmd(m.fetch, g.Rows[l.row])
+	return m, m.goCmd(g.Rows[l.row])
+}
+
+// goCmd takes the user to row. On a phone it first zooms the pane the row
+// leads to, which closes the sidebar. The zoom comes before the move on
+// purpose: the destination's dock opens itself when its tab gains the focus
+// unzoomed, and must find the tab already zoomed when it next looks.
+func (m Model) goCmd(row group.Row) tea.Cmd {
+	if !m.phone.enabled() || !m.phone.phone {
+		return focusCmd(m.fetch, row)
+	}
+	tabID, paneID := row.TabID, row.PaneID
+	if row.Kind == group.RowWorkspace {
+		tabID, paneID = m.workspaceTarget(row.WorkspaceID)
+	}
+	fetch, marks := m.fetch, m.phone.marks
+	return func() tea.Msg {
+		if paneID != "" {
+			if tabID != "" {
+				_ = marks.Set(tabID, paneID)
+			}
+			_ = fetch.Zoom(paneID, true)
+		}
+		return focusCmd(fetch, row)()
+	}
+}
+
+// workspaceTarget picks the pane a workspace row zooms on a phone: in the
+// workspace's active tab, the focused pane unless that is a dock, else the
+// largest pane that is not one. Empty strings when the last snapshot cannot say.
+func (m Model) workspaceTarget(workspaceID string) (tabID, paneID string) {
+	s := m.phone.last
+	for _, w := range s.Workspaces {
+		if w.WorkspaceID == workspaceID {
+			tabID = w.ActiveTabID
+		}
+	}
+	l, ok := s.Layout(tabID)
+	if !ok {
+		return "", ""
+	}
+	dockID := ""
+	for _, p := range s.Panes {
+		if p.TabID == tabID && m.opt.SelfToken != "" && p.Tokens[m.opt.SelfToken] != "" {
+			dockID = p.PaneID
+		}
+	}
+	paneID, ok = mobile.ReturnPane(l, dockID, l.FocusedPaneID)
+	if !ok {
+		return "", ""
+	}
+	return tabID, paneID
+}
+
+// observe reads this dock's own tab out of a fresh snapshot and reacts to the
+// moment things change, never to a state that merely persists: a user who
+// unzooms by hand on a phone is not overruled a second later.
+//
+//   - Its tab gains the focus on a phone while unzoomed: open the sidebar.
+//   - The tab stops being phone-sized: undo the zoom pasture made, if any. The
+//     first snapshot counts as coming from a phone, so a zoom left behind by an
+//     earlier dock process is undone too.
+func (m *Model) observe(s snapshot.Snapshot) tea.Cmd {
+	p := &m.phone
+	if !p.enabled() {
+		return nil
+	}
+	l, ok := s.Layout(p.selfTab)
+	if !ok {
+		return nil // no geometry for our tab: decide nothing, remember nothing
+	}
+	p.last = s
+	wasPhone, wasActive := p.phone || !p.seen, p.active
+	p.seen = true
+	p.phone = mobile.Phone(l, p.threshold)
+	p.active = p.phone && s.FocusedTabID == p.selfTab
+	fetch, marks, tabID, self := m.fetch, p.marks, p.selfTab, p.selfPane
+	switch {
+	case p.active && !wasActive && !l.Zoomed:
+		back := ""
+		if l.FocusedPaneID != self {
+			back = l.FocusedPaneID
+		}
+		return func() tea.Msg {
+			if back == "" {
+				back, _ = marks.Get(tabID)
+			}
+			_ = marks.Set(tabID, back)
+			_ = fetch.Zoom(self, true)
+			return nil
+		}
+	case wasPhone && !p.phone:
+		if _, marked := marks.Get(tabID); !marked {
+			return nil
+		}
+		zoomed, focused := l.Zoomed, l.FocusedPaneID
+		if focused == "" {
+			focused = self
+		}
+		return func() tea.Msg {
+			if zoomed {
+				if err := fetch.Zoom(focused, false); err != nil {
+					// Keep the mark: a dock started later undoes the zoom
+					// on its first snapshot.
+					return nil
+				}
+			}
+			_ = marks.Clear(tabID)
+			return nil
+		}
+	}
+	return nil
 }
 
 // soleWorkspace reports the row of a group whose only content is one workspace

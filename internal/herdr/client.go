@@ -128,6 +128,18 @@ func (c *Client) Rename(paneID, label string) error {
 	return err
 }
 
+// Zoom sets paneID's zoom on or off. Verified against herdr 0.9.0: zooming
+// also focuses the pane, and zooming a pane in a tab the client is not looking
+// at moves the server's focus to that tab while the client's view stays put.
+func (c *Client) Zoom(paneID string, on bool) error {
+	flag := "--off"
+	if on {
+		flag = "--on"
+	}
+	_, err := c.r.Run("pane", "zoom", paneID, flag)
+	return err
+}
+
 // Close closes a pane.
 func (c *Client) Close(paneID string) error {
 	_, err := c.r.Run("pane", "close", paneID)

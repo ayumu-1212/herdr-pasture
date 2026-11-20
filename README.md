@@ -28,6 +28,8 @@ row to jump to that agent; click a group header to collapse it (the fold state i
   the row shows one icon rather than two.
 - The title bar shows `disconnected` when `herdr api snapshot` is failing; the
   last known list stays on screen until herdr answers again.
+- On a phone the dock becomes a sidebar that opens and closes; see
+  [On a phone](#on-a-phone).
 
 ## Install
 
@@ -80,7 +82,8 @@ actions are exposed:
 
 - `herdr-pasture.toggle` — close the pane in the current tab (it stays closed,
   "snoozed", until you toggle again) or open it. This works even with
-  `auto_open = false`.
+  `auto_open = false`. On a phone it opens and closes the sidebar instead; see
+  [On a phone](#on-a-phone).
 - `herdr-pasture.redeploy` — clear every snooze, then close each pasture pane and
   build its replacement on the current binary. It leaves the focus in the tab you
   were in.
@@ -115,6 +118,34 @@ the next event rather than filling the plugin log with failed commands.
 | left click | focus that agent, or collapse/expand that header |
 | wheel | scroll the list |
 
+### On a phone
+
+herdr keeps a tab's splits on a narrow screen, so on a phone the dock would take
+a third of the width away from the agent. When the terminal is `mobile_width`
+columns or narrower (64 by default, the same as herdr's own
+`ui.mobile_width_threshold`), pasture works as a sidebar instead, using herdr's
+pane zoom:
+
+- **Open**: the dock is zoomed to the full screen. It opens by itself when you
+  arrive on a tab that is not zoomed — attaching from the phone, or switching to
+  such a tab with herdr's switch menu.
+- **Pick a row**: pasture zooms the pane that row leads to and moves there, so the
+  sidebar is closed and the agent fills the screen. A workspace row zooms the
+  focused pane of that workspace's active tab (never its dock).
+- **Reopen**: `herdr-pasture.toggle` (the `prefix+g` binding above). Pressed
+  again with the sidebar open, it closes it back to the pane you came from. On a
+  phone the toggle never closes the dock, so reopening is instant.
+
+Zoom is kept per tab by the herdr server, so it would still be there on the
+desktop. pasture remembers which tabs it zoomed, and once the session is looked
+at from a wider terminal again each dock unzooms its own tab. A zoom you made
+yourself is left alone. If you unzoom by hand on the phone, pasture does not
+zoom that tab again until you leave it and come back.
+
+`width_columns` is not reapplied while the terminal is phone-sized: herdr keeps
+one split ratio for every client, so fitting 50 columns into a 45-column phone
+would leave the desktop with a dock half the tab wide.
+
 Activating an agent row focuses the pane's tab before the pane itself. herdr 0.9
 moves the client that is looking at the session only for a fixed set of
 navigation requests, and focusing an agent is not one of them: on its own it
@@ -132,6 +163,7 @@ width_ratio = 0.25        # share of the tab width (0.1–0.5)
 width_columns = 0         # >0: fix the dock at this many columns, ignoring width_ratio
 poll_interval_ms = 1000   # how often to read `herdr api snapshot` (min 100)
 exclude = ["~/tmp/**"]    # hide panes whose cwd matches
+mobile_width = 64         # at or below this many terminal columns, act as a phone sidebar (0: off)
 ```
 
 `width_columns` wins over `width_ratio` when it is 1 or more. The dock is
@@ -142,6 +174,10 @@ Both settings describe a share of the whole tab. The dock is carved out of the
 tab's leftmost pane, so on a tab that is already split it takes a larger share
 of that pane to land on the width you asked for. It never takes more than half
 the pane it splits, and never renders below 22 columns.
+
+`mobile_width` is compared with the terminal width, not the tab's: when herdr's
+own sidebar is showing, a tab starts to the right of it. Set it to the same value
+as `ui.mobile_width_threshold` if you changed that.
 
 `exclude` patterns expand a leading `~` and `$VARS`. A trailing `/**` matches the
 directory and everything under it; anything else is a `filepath.Match` glob
@@ -167,6 +203,12 @@ leftmost column. The change takes effect on the next herdr launch.
 
 - Snooze state is keyed by tab id and shared across named herdr sessions, so
   two sessions that reuse a tab id share its snooze.
+- herdr sizes the session to the client that attached most recently, so with a
+  desktop and a phone attached at once the session flips between the two sizes,
+  and so does pasture's phone behaviour: arriving back on the phone opens the
+  sidebar of a tab the desktop had unzoomed.
+- A phone tab where you picked an agent stays zoomed on it. Switching back to it
+  with herdr's switch menu shows that agent, not the sidebar.
 - If the leftmost column of a tab is stacked, the pane takes the tallest pane's
   height rather than the full tab height.
 - If the tab layout is unavailable at the moment an event fires, that tab is
@@ -235,6 +277,13 @@ of them live — with no focus event in between, where the old behaviour left th
 session with no docks at all until something created a tab. The focus stayed on
 `w8:p1`, the pane it was on before, and the client's view stayed on w8 rather than
 following the last tab rebuilt.
+
+v0.4.0 was verified on 0.9.0 in an isolated session driven through a 45-column
+and a 120-column pty: attaching at 45 columns opened the sidebar full screen;
+tapping a workspace row closed it onto that workspace's shell; the toggle opened
+and closed it again; detaching the phone unzoomed both tabs pasture had zoomed
+and the 50-column dock was back on the desktop; and `ensure` at 45 columns left a
+19-column dock alone where `width_columns = 50` would have resized it.
 
 v0.3.3 was verified on 0.9.0 against the live installed plugin: `pane swap`
 focuses whichever pane it is handed as `--source-pane` (an unfocused pane named

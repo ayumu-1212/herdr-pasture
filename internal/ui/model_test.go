@@ -19,6 +19,17 @@ type fakeFetcher struct {
 	focusedTabs []string
 	order       string
 	snapshots   int
+	zooms       []string // "pane:on" / "pane:off"
+}
+
+func (f *fakeFetcher) Zoom(id string, on bool) error {
+	state := "off"
+	if on {
+		state = "on"
+	}
+	f.zooms = append(f.zooms, id+":"+state)
+	f.note("zoom")
+	return nil
 }
 
 func (f *fakeFetcher) FocusTab(id string) error {
@@ -49,6 +60,7 @@ func (f *fakeFetcher) FocusAgent(id string) error {
 
 func (f *fakeFetcher) FocusWorkspace(id string) error {
 	f.focusedWS = append(f.focusedWS, id)
+	f.note("workspace")
 	return nil
 }
 
@@ -171,6 +183,7 @@ func (c *countingFetcher) Snapshot() (snapshot.Snapshot, error) {
 func (c *countingFetcher) FocusAgent(string) error     { return nil }
 func (c *countingFetcher) FocusWorkspace(string) error { return nil }
 func (c *countingFetcher) FocusTab(string) error       { return nil }
+func (c *countingFetcher) Zoom(string, bool) error     { return nil }
 
 // TestRefreshKeepsExactlyOnePollChain drives the model the way bubbletea's
 // event loop does — run every pending cmd, feed the messages back — and counts
