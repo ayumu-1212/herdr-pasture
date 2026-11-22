@@ -189,3 +189,16 @@ func Wide(l snapshot.Layout, dockID string) bool
 - `dock`: スマホ表示の `toggle` の開く／閉じる（帯になる）。
 - 実機確認: 隔離セッションを 45 桁と 120 桁で開き、帯、帯のタップ、行選択、worktree 行、
   PC 復帰での幅の復元を画面で見る。
+
+## 9. v0.5.1: `+ worktree` を `+ workspace` に変更（2026-11-22）
+
+欲しかったのは worktree ではなく、そのディレクトリでワークスペースを開くボタンだった。
+
+- 行は `+ workspace`。スマホ表示のとき、すべてのグループの末尾に出す（git リポジトリで
+  なくてもよいので `Group.Repo` は削除）。
+- 押すと `herdr workspace create --cwd <グループのキー> --label <キーの basename>
+  --no-focus` を実行し、新しいタブに印を付けて `workspace focus`。グループのキーは
+  リポジトリならそのルート（worktree なら本体のルート）、そうでなければ cwd。
+  `prefix+shift+r`（このリポジトリのルートでワークスペース）と同じ動き。
+- git を動かさないので、1 分のタイムアウトの別クライアントはやめ、通常のクライアントを使う。
+- 失敗時の表示は `workspace failed`。

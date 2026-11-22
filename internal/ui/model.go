@@ -2,6 +2,7 @@
 package ui
 
 import (
+	"path/filepath"
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -21,10 +22,9 @@ type Fetcher interface {
 	Resize(paneID string, amount float64) error
 }
 
-// Worktrees makes git worktrees. It is separate from Fetcher because creating
-// one runs git and needs a far longer timeout than a poll.
-type Worktrees interface {
-	CreateWorktree(cwd string) (snapshot.Worktree, error)
+// Workspaces makes herdr workspaces, for the phone sidebar's "+ workspace" row.
+type Workspaces interface {
+	CreateWorkspace(cwd, label string) (snapshot.Created, error)
 }
 
 // Store shares the folded-group set between pasture panes. Load errors leave
@@ -62,7 +62,7 @@ type Model struct {
 	disconnected bool
 
 	// notice is a short message shown in the title bar after an explicit
-	// action, such as a worktree that could not be made. noticePolls is how
+	// action, such as a workspace that could not be made. noticePolls is how
 	// many more snapshots it stays for; -1 keeps it until the action reports.
 	notice      string
 	noticePolls int
@@ -81,7 +81,7 @@ type phoneState struct {
 	// desktopColumns is the dock width to give back to the desktop
 	// (width_columns); 0 gives back the width the mark remembers.
 	desktopColumns int
-	worktrees      Worktrees // nil: no worktree row
+	workspaces     Workspaces // nil: no "+ workspace" row
 
 	seen   bool // at least one snapshot showed this dock's tab
 	phone  bool // this dock's tab is phone-sized
@@ -100,18 +100,18 @@ const railWidth = 6
 
 // line is one screen row below the title bar.
 type line struct {
-	header   bool
-	worktree bool // the "+ worktree" row ending a repository's group
-	group    int  // index into groups
-	row      int  // index into groups[group].Rows; -1 for headers and worktree rows
+	header       bool
+	newWorkspace bool // the "+ workspace" row ending a group
+	group        int  // index into groups
+	row          int  // index into groups[group].Rows; -1 for headers and "+ workspace"
 }
 
-// worktreeMsg reports how making a worktree went.
-type worktreeMsg struct{ err error }
+// createdMsg reports how making a workspace went.
+type createdMsg struct{ err error }
 
 const (
-	noticeCreating = "new worktree…"
-	noticeFailed   = "worktree failed"
+	noticeCreating = "new workspace…"
+	noticeFailed   = "workspace failed"
 	noticePolls    = 5
 )
 
@@ -154,10 +154,10 @@ func (m Model) WithMobile(selfPane, selfTab string, threshold int, marks mobile.
 	return m
 }
 
-// WithWorktrees gives the phone sidebar a "+ worktree" row under each
-// repository, which makes a worktree through w.
-func (m Model) WithWorktrees(w Worktrees) Model {
-	m.phone.worktrees = w
+// WithWorkspaces gives the phone sidebar a "+ workspace" row under each group,
+// which opens a new workspace in the group's directory through w.
+func (m Model) WithWorkspaces(w Workspaces) Model {
+	m.phone.workspaces = w
 	return m
 }
 
@@ -232,7 +232,7 @@ func (m Model) Update(msg tea.Msg) (Model, tea.Cmd) {
 			return m, nil // a retired chain's tick: let it die here
 		}
 		return m, m.fetchCmd()
-	case worktreeMsg:
+	case createdMsg:
 		m.notice, m.noticePolls = "", 0
 		if msg.err != nil {
 			m.notice, m.noticePolls = noticeFailed, noticePolls
@@ -316,8 +316,8 @@ func (m Model) activate(idx int) (Model, tea.Cmd) {
 	}
 	l := ls[idx]
 	g := m.groups[l.group]
-	if l.worktree {
-		cmd := m.worktreeCmd(g.Key)
+	if l.newWorkspace {
+		cmd := m.newWorkspaceCmd(g.Key)
 		if cmd != nil {
 			m.notice, m.noticePolls = noticeCreating, -1
 		}
@@ -378,25 +378,25 @@ func (m Model) openCmd() tea.Cmd {
 	}
 }
 
-// worktreeCmd makes a worktree of the repository at root and takes the user to
-// its workspace. The new tab is marked first, so the dock ensure builds there
-// starts as the closed strip beside the worktree's shell rather than opening.
-func (m Model) worktreeCmd(root string) tea.Cmd {
-	wt := m.phone.worktrees
-	if wt == nil {
+// newWorkspaceCmd opens a new workspace in dir, labelled with dir's name, and
+// takes the user there. The new tab is marked first, so the dock ensure builds
+// there starts as the closed strip beside the shell rather than opening.
+func (m Model) newWorkspaceCmd(dir string) tea.Cmd {
+	ws := m.phone.workspaces
+	if ws == nil {
 		return nil
 	}
 	fetch, marks := m.fetch, m.phone.marks
 	return func() tea.Msg {
-		w, err := wt.CreateWorktree(root)
+		c, err := ws.CreateWorkspace(dir, filepath.Base(dir))
 		if err != nil {
-			return worktreeMsg{err: err}
+			return createdMsg{err: err}
 		}
-		if w.TabID != "" {
-			_ = marks.Remember(w.TabID, w.PaneID, snapshot.Layout{}, "")
+		if c.TabID != "" {
+			_ = marks.Remember(c.TabID, c.PaneID, snapshot.Layout{}, "")
 		}
-		_ = fetch.FocusWorkspace(w.WorkspaceID)
-		return worktreeMsg{}
+		_ = fetch.FocusWorkspace(c.WorkspaceID)
+		return createdMsg{}
 	}
 }
 
@@ -531,8 +531,8 @@ func (m Model) lines() []line {
 		for ri := range g.Rows {
 			out = append(out, line{group: gi, row: ri})
 		}
-		if g.Repo && m.onPhone() && m.phone.worktrees != nil {
-			out = append(out, line{worktree: true, group: gi, row: -1})
+		if m.onPhone() && m.phone.workspaces != nil {
+			out = append(out, line{newWorkspace: true, group: gi, row: -1})
 		}
 	}
 	return out

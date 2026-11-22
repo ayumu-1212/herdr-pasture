@@ -28,7 +28,7 @@ import (
 
 // version must match herdr-plugin.toml's version field: `herdr plugin list`
 // reports the manifest's, and `pasture version` reports this one.
-const version = "0.5.0"
+const version = "0.5.1"
 
 const usage = "usage: pasture <ui|ensure|startup|toggle|redeploy|version>"
 
@@ -129,15 +129,6 @@ func (t teaModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 func (t teaModel) View() string { return t.m.View() }
 
-// worktreeClient is a herdr client for `worktree create`, which runs git: a
-// checkout of a large repository takes far longer than the 5 seconds a poll is
-// allowed.
-func worktreeClient() *herdr.Client {
-	r := herdr.NewExecRunner()
-	r.Timeout = time.Minute
-	return herdr.New(r)
-}
-
 // runUI starts the TUI. A pane started by `herdr pane run` only inherits
 // HERDR_PANE_ID / HERDR_TAB_ID / HERDR_WORKSPACE_ID / HERDR_ENV, so the plugin
 // dirs arrive via the --env flags dock passes to `pane split`, and
@@ -167,7 +158,7 @@ func runUI(cfg config.Config, client *herdr.Client) error {
 		WithStore(collapse.NewFileStore(stateDir())).
 		WithMobile(os.Getenv("HERDR_PANE_ID"), os.Getenv("HERDR_TAB_ID"), cfg.MobileWidth,
 			mobile.Marks{Dir: stateDir()}, cfg.WidthColumns).
-		WithWorktrees(worktreeClient())
+		WithWorkspaces(client)
 	// WithAltScreen is not cosmetic: the UI maps a click's Y to a list row
 	// assuming its own first line is row 0. dock starts it with `pane run`,
 	// which types into a live shell, so an inline frame would begin one or two

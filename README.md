@@ -131,7 +131,7 @@ columns or narrower (64 by default, the same as herdr's own
 │herdr-pasture             │  │›  ││ claude …             │
 │›▾ polala                 │  │   ││                      │
 │   ✓ [feat/email] email…  │  │   ││                      │
-│   + worktree             │  │   ││                      │
+│   + workspace            │  │   ││                      │
 └──────────────────────────┘  └───┘└──────────────────────┘
 ```
 
@@ -145,12 +145,11 @@ columns or narrower (64 by default, the same as herdr's own
 - **Pick a row**: pasture closes the sidebar of the tab that row leads to onto
   that pane, then moves there. A workspace row goes to the focused pane of that
   workspace's active tab (never its dock).
-- **`+ worktree`**: the last row of each git repository's group, shown on a phone
-  only. It runs `herdr worktree create` in that repository, with the branch name
-  herdr makes up (`worktree/brave-harbor-0760`), and takes you to the new
-  worktree's shell with the sidebar closed. If herdr refuses, the title bar says
-  `worktree failed` for a few seconds. On the desktop, herdr's own
-  `prefix+shift+g` does the same.
+- **`+ workspace`**: the last row of each group, shown on a phone only. It opens
+  a new herdr workspace in the group's directory (the repository root, for a
+  repository), labelled with the directory's name, and takes you to its shell
+  with the sidebar closed. If herdr refuses, the title bar says
+  `workspace failed` for a few seconds.
 - **`herdr-pasture.toggle`** (the `prefix+g` binding above) opens the sidebar, and
   pressed again with it open, closes it back onto the pane you came from. On a
   phone the toggle never closes the dock, so reopening is instant.
@@ -307,8 +306,8 @@ following the last tab rebuilt.
 v0.5.0 was verified on 0.9.0 in the same way: closing a sidebar from a row,
 the toggle or the strip left a 5-column strip beside a 40-column pane, and
 tapping the strip opened it again; a tab closed on the phone was still the strip
-when reached through herdr's switch menu; `+ worktree` made a worktree and its
-workspace and moved there; a dock built in a tab marked closed came up at the
+when reached through herdr's switch menu; `+ worktree` (v0.5.1 turned it into
+`+ workspace`) made a worktree and its workspace and moved there; a dock built in a tab marked closed came up at the
 usual 22 columns and squeezed itself to the strip; and detaching the phone gave
 every tab back at 50 columns, unzoomed, with no mark left. herdr stops a split at
 a ratio of 0.1, and `agent focus` refuses a pane with no agent, which is why

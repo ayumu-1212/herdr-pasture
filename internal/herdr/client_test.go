@@ -155,22 +155,22 @@ func TestZoomBuildsArgv(t *testing.T) {
 	}
 }
 
-func TestCreateWorktreeBuildsArgvAndDecodes(t *testing.T) {
-	r := &FakeRunner{Outputs: []string{`{"id":"cli:worktree:create","result":{"root_pane":{"pane_id":"w4:p1","tab_id":"w4:t1"},"tab":{"tab_id":"w4:t1"},"type":"worktree_created","workspace":{"active_tab_id":"w4:t1","workspace_id":"w4"}}}`}}
-	got, err := New(r).CreateWorktree("/src/repo")
+func TestCreateWorkspaceBuildsArgvAndDecodes(t *testing.T) {
+	r := &FakeRunner{Outputs: []string{`{"id":"cli:workspace:create","result":{"root_pane":{"pane_id":"w4:p1","tab_id":"w4:t1"},"tab":{"tab_id":"w4:t1"},"type":"workspace_created","workspace":{"active_tab_id":"w4:t1","workspace_id":"w4"}}}`}}
+	got, err := New(r).CreateWorkspace("/src/repo", "repo")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if want := (snapshot.Worktree{WorkspaceID: "w4", TabID: "w4:t1", PaneID: "w4:p1"}); got != want {
+	if want := (snapshot.Created{WorkspaceID: "w4", TabID: "w4:t1", PaneID: "w4:p1"}); got != want {
 		t.Fatalf("got %+v, want %+v", got, want)
 	}
-	if want := []string{"worktree", "create", "--cwd", "/src/repo", "--no-focus"}; !reflect.DeepEqual(r.Calls[0], want) {
+	if want := []string{"workspace", "create", "--cwd", "/src/repo", "--label", "repo", "--no-focus"}; !reflect.DeepEqual(r.Calls[0], want) {
 		t.Fatalf("argv = %v", r.Calls[0])
 	}
 }
 
-func TestCreateWorktreeRejectsAResponseWithoutAWorkspace(t *testing.T) {
-	if _, err := New(&FakeRunner{Outputs: []string{`{"result":{}}`}}).CreateWorktree("/r"); err == nil {
+func TestCreateWorkspaceRejectsAResponseWithoutAWorkspace(t *testing.T) {
+	if _, err := New(&FakeRunner{Outputs: []string{`{"result":{}}`}}).CreateWorkspace("/r", "r"); err == nil {
 		t.Fatal("want an error")
 	}
 }

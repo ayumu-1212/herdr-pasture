@@ -2,6 +2,7 @@ package ui
 
 import (
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -67,43 +68,44 @@ func (w world) snap() snapshot.Snapshot {
 func phoneGroups() []group.Group {
 	return []group.Group{
 		{Key: "/r/a", Label: "a", Rows: []group.Row{{Kind: group.RowAgent, PaneID: "w1:p1", TabID: selfTab, Title: "one"}}},
-		{Key: "/r/b", Label: "b", Repo: true, Rows: []group.Row{
+		{Key: "/r/b", Label: "b", Rows: []group.Row{
 			{Kind: group.RowAgent, PaneID: "w3:p1", TabID: "w3:t1", Title: "far"},
 			{Kind: group.RowWorkspace, WorkspaceID: "w2", Title: "w2"},
 		}},
 	}
 }
 
-// fakeWorktrees makes worktree w9 (tab w9:t1, shell w9:p1) unless err is set.
-type fakeWorktrees struct {
+// fakeWorkspaces makes workspace w9 (tab w9:t1, shell w9:p1) unless err is set,
+// recording "cwd label".
+type fakeWorkspaces struct {
 	made []string
 	err  error
 }
 
-func (w *fakeWorktrees) CreateWorktree(cwd string) (snapshot.Worktree, error) {
-	w.made = append(w.made, cwd)
+func (w *fakeWorkspaces) CreateWorkspace(cwd, label string) (snapshot.Created, error) {
+	w.made = append(w.made, cwd+" "+label)
 	if w.err != nil {
-		return snapshot.Worktree{}, w.err
+		return snapshot.Created{}, w.err
 	}
-	return snapshot.Worktree{WorkspaceID: "w9", TabID: "w9:t1", PaneID: "w9:p1"}, nil
+	return snapshot.Created{WorkspaceID: "w9", TabID: "w9:t1", PaneID: "w9:p1"}, nil
 }
 
 type phoneRig struct {
 	t     *testing.T
 	f     *fakeFetcher
-	wt    *fakeWorktrees
+	ws    *fakeWorkspaces
 	m     Model
 	marks mobile.Marks
 }
 
 func newPhoneRig(t *testing.T) *phoneRig {
-	f, wt := &fakeFetcher{}, &fakeWorktrees{}
+	f, ws := &fakeFetcher{}, &fakeWorkspaces{}
 	marks := mobile.Marks{Dir: t.TempDir()}
 	m := New(f, mapResolver{}, group.Options{SelfToken: token}, time.Second).
 		WithMobile(selfPane, selfTab, 64, marks, 30).
-		WithWorktrees(wt)
+		WithWorkspaces(ws)
 	m, _ = m.Update(tea.WindowSizeMsg{Width: 40, Height: 20})
-	return &phoneRig{t: t, f: f, wt: wt, m: m, marks: marks}
+	return &phoneRig{t: t, f: f, ws: ws, m: m, marks: marks}
 }
 
 // run runs cmd and feeds the model whatever message it returns.
@@ -239,7 +241,7 @@ func TestBackOnTheDesktopUnzoomsAnOpenSidebar(t *testing.T) {
 
 func TestBackOnTheDesktopUsesWidthColumnsWhenTheMarkHasNoWidth(t *testing.T) {
 	r := newPhoneRig(t)
-	_ = r.marks.Set(selfTab, mobile.Mark{Back: "w1:p1"}) // made by the worktree row
+	_ = r.marks.Set(selfTab, mobile.Mark{Back: "w1:p1"}) // made by the "+ workspace" row
 	r.poll(world{width: 120, focusTab: selfTab, dock: 12})
 	if r.resizes() != "w1:p5 0.150" {
 		t.Fatalf("resizes = %q, want the configured 30 columns", r.resizes())
@@ -282,7 +284,7 @@ func TestPhoneRowInAnotherTabMarksItBeforeMoving(t *testing.T) {
 	r := newPhoneRig(t)
 	r.poll(world{width: 45, focusTab: selfTab})
 	r.reset()
-	_, cmd := r.m.activate(3) // "far", in w3:t1, which the snapshot has no layout for
+	_, cmd := r.m.activate(4) // "far", in w3:t1, which the snapshot has no layout for
 	drain(cmd)
 	if r.f.order != "zoom,zoom,tab,agent" {
 		t.Fatalf("order = %q", r.f.order)
@@ -296,7 +298,7 @@ func TestPhoneWorkspaceRowClosesOntoItsShell(t *testing.T) {
 	r := newPhoneRig(t)
 	r.poll(world{width: 45, focusTab: selfTab})
 	r.reset()
-	_, cmd := r.m.activate(4) // workspace w2, whose focused pane is its dock
+	_, cmd := r.m.activate(5) // workspace w2, whose focused pane is its dock
 	drain(cmd)
 	if r.resizes() != "w2:p9 -0.900" || r.zooms() != "w2:p1:on w2:p1:off" {
 		t.Fatalf("resizes = %q zooms = %q, want the shell, never the dock", r.resizes(), r.zooms())
@@ -350,46 +352,48 @@ func TestANarrowDockOnTheDesktopIsNoStrip(t *testing.T) {
 	}
 }
 
-func worktreeLine(m Model) int {
+// newWorkspaceLines lists the indices of the "+ workspace" rows.
+func newWorkspaceLines(m Model) []int {
+	var out []int
 	for i, l := range m.lines() {
-		if l.worktree {
-			return i
+		if l.newWorkspace {
+			out = append(out, i)
 		}
 	}
-	return -1
+	return out
 }
 
-func TestTheWorktreeRowIsOnlyOnAPhoneAndOnlyForRepositories(t *testing.T) {
+func TestTheNewWorkspaceRowEndsEveryGroupOnAPhoneOnly(t *testing.T) {
 	r := newPhoneRig(t)
 	r.poll(world{width: 120, focusTab: selfTab})
-	if i := worktreeLine(r.m); i != -1 {
-		t.Fatalf("desktop has a worktree row at %d", i)
+	if got := newWorkspaceLines(r.m); len(got) != 0 {
+		t.Fatalf("desktop has new-workspace rows at %v", got)
 	}
 	r.poll(world{width: 45, focusTab: selfTab})
-	if i := worktreeLine(r.m); i != 5 {
-		t.Fatalf("worktree row at %d, want 5: after b's rows, none for a", i)
+	if got := fmt.Sprint(newWorkspaceLines(r.m)); got != "[2 6]" {
+		t.Fatalf("new-workspace rows at %s, want the end of each group", got)
 	}
-	if !strings.Contains(r.m.View(), "+ worktree") {
+	if !strings.Contains(r.m.View(), "+ workspace") {
 		t.Fatalf("view:\n%s", r.m.View())
 	}
 	r.m.collapsed["/r/b"] = true
-	if i := worktreeLine(r.m); i != -1 {
-		t.Fatal("a folded group hides its worktree row")
+	if got := fmt.Sprint(newWorkspaceLines(r.m)); got != "[2]" {
+		t.Fatalf("rows at %s; a folded group hides its row", got)
 	}
 }
 
-func TestTheWorktreeRowMakesOneAndGoesThereClosed(t *testing.T) {
+func TestTheNewWorkspaceRowOpensOneInTheGroupsDirectory(t *testing.T) {
 	r := newPhoneRig(t)
 	r.poll(world{width: 45, focusTab: selfTab})
 	r.reset()
 	var cmd tea.Cmd
-	r.m, cmd = r.m.activate(5)
+	r.m, cmd = r.m.activate(6)
 	if !strings.Contains(r.m.View(), noticeCreating) {
-		t.Fatalf("no sign of the worktree being made:\n%s", r.m.View())
+		t.Fatalf("no sign of the workspace being made:\n%s", r.m.View())
 	}
 	r.run(cmd)
-	if strings.Join(r.wt.made, ",") != "/r/b" {
-		t.Fatalf("made = %v", r.wt.made)
+	if strings.Join(r.ws.made, ",") != "/r/b b" {
+		t.Fatalf("made = %v, want /r/b labelled b", r.ws.made)
 	}
 	if r.f.order != "workspace" || strings.Join(r.f.focusedWS, ",") != "w9" {
 		t.Fatalf("order = %q ws = %v", r.f.order, r.f.focusedWS)
@@ -398,16 +402,16 @@ func TestTheWorktreeRowMakesOneAndGoesThereClosed(t *testing.T) {
 		t.Fatalf("mark = %+v, %v; the new tab must start closed", mk, ok)
 	}
 	if strings.Contains(r.m.View(), noticeCreating) {
-		t.Fatal("the notice outlived the worktree")
+		t.Fatal("the notice outlived the workspace")
 	}
 }
 
-func TestAWorktreeThatFailsSaysSo(t *testing.T) {
+func TestAWorkspaceThatFailsSaysSo(t *testing.T) {
 	r := newPhoneRig(t)
-	r.wt.err = errors.New("not a repo")
+	r.ws.err = errors.New("no such directory")
 	r.poll(world{width: 45, focusTab: selfTab})
 	var cmd tea.Cmd
-	r.m, cmd = r.m.activate(5)
+	r.m, cmd = r.m.activate(6)
 	r.run(cmd)
 	if !strings.Contains(r.m.View(), noticeFailed) {
 		t.Fatalf("view:\n%s", r.m.View())

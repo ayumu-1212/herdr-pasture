@@ -70,8 +70,8 @@ func (m Model) View() string {
 			marker = cursorMarker
 		}
 		var text string
-		if l.worktree {
-			text = dimStyle.Render(truncate("  + worktree", width-1))
+		if l.newWorkspace {
+			text = dimStyle.Render(truncate("  + workspace", width-1))
 		} else if l.header {
 			chevron := "▾"
 			if m.collapsed[g.Key] {
