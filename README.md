@@ -123,24 +123,45 @@ the next event rather than filling the plugin log with failed commands.
 herdr keeps a tab's splits on a narrow screen, so on a phone the dock would take
 a third of the width away from the agent. When the terminal is `mobile_width`
 columns or narrower (64 by default, the same as herdr's own
-`ui.mobile_width_threshold`), pasture works as a sidebar instead, using herdr's
-pane zoom:
+`ui.mobile_width_threshold`), pasture works as a sidebar instead:
+
+```
+ open                          closed
+┌ pasture ─────────────────┐  ┌ … ┐┌──────────────────────┐
+│herdr-pasture             │  │›  ││ claude …             │
+│›▾ polala                 │  │   ││                      │
+│   ✓ [feat/email] email…  │  │   ││                      │
+│   + worktree             │  │   ││                      │
+└──────────────────────────┘  └───┘└──────────────────────┘
+```
 
 - **Open**: the dock is zoomed to the full screen. It opens by itself when you
-  arrive on a tab that is not zoomed — attaching from the phone, or switching to
-  such a tab with herdr's switch menu.
-- **Pick a row**: pasture zooms the pane that row leads to and moves there, so the
-  sidebar is closed and the agent fills the screen. A workspace row zooms the
-  focused pane of that workspace's active tab (never its dock).
-- **Reopen**: `herdr-pasture.toggle` (the `prefix+g` binding above). Pressed
-  again with the sidebar open, it closes it back to the pane you came from. On a
+  arrive on a tab pasture has not closed yet — attaching from the phone, say.
+- **Closed**: the dock shrinks to a strip on the left edge, herdr's narrowest
+  split (5 columns of a 45-column phone), and the pane you went to fills the
+  rest. **Tap the strip anywhere to open the sidebar again.** A tab you closed
+  stays closed when you come back to it, through herdr's own switch menu too, so
+  the strip is what you see there.
+- **Pick a row**: pasture closes the sidebar of the tab that row leads to onto
+  that pane, then moves there. A workspace row goes to the focused pane of that
+  workspace's active tab (never its dock).
+- **`+ worktree`**: the last row of each git repository's group, shown on a phone
+  only. It runs `herdr worktree create` in that repository, with the branch name
+  herdr makes up (`worktree/brave-harbor-0760`), and takes you to the new
+  worktree's shell with the sidebar closed. If herdr refuses, the title bar says
+  `worktree failed` for a few seconds. On the desktop, herdr's own
+  `prefix+shift+g` does the same.
+- **`herdr-pasture.toggle`** (the `prefix+g` binding above) opens the sidebar, and
+  pressed again with it open, closes it back onto the pane you came from. On a
   phone the toggle never closes the dock, so reopening is instant.
 
-Zoom is kept per tab by the herdr server, so it would still be there on the
-desktop. pasture remembers which tabs it zoomed, and once the session is looked
-at from a wider terminal again each dock unzooms its own tab. A zoom you made
-yourself is left alone. If you unzoom by hand on the phone, pasture does not
-zoom that tab again until you leave it and come back.
+Zoom and split ratios are kept by the herdr server for every client, so both
+would still be there on the desktop. pasture remembers which tabs it took over,
+and once the session is looked at from a wider terminal again each dock gives
+its own tab back: unzoomed, with the dock at `width_columns` (or the width it
+had before the phone, without that setting). Tabs pasture never touched are left
+alone, and so is a zoom you made yourself. If you unzoom an open sidebar by hand
+on the phone, pasture does not zoom it again; the dock goes back to the strip.
 
 `width_columns` is not reapplied while the terminal is phone-sized: herdr keeps
 one split ratio for every client, so fitting 50 columns into a 45-column phone
@@ -201,14 +222,19 @@ leftmost column. The change takes effect on the next herdr launch.
 
 ## Known limitations
 
-- Snooze state is keyed by tab id and shared across named herdr sessions, so
-  two sessions that reuse a tab id share its snooze.
+- Snooze state and the phone sidebar's marks are keyed by tab id and shared
+  across named herdr sessions, so two sessions that reuse a tab id share them.
 - herdr sizes the session to the client that attached most recently, so with a
   desktop and a phone attached at once the session flips between the two sizes,
   and so does pasture's phone behaviour: arriving back on the phone opens the
-  sidebar of a tab the desktop had unzoomed.
-- A phone tab where you picked an agent stays zoomed on it. Switching back to it
-  with herdr's switch menu shows that agent, not the sidebar.
+  sidebar of a tab the desktop had given back.
+- On a phone a closed tab is not zoomed, so a tab with several panes besides the
+  dock shows all of them side by side next to the strip. Zooming the one you
+  want would hide the strip.
+- herdr's switch menu (the `switch` at the top right of the phone layout) cannot
+  be replaced by a plugin. Use the strip instead.
+- A redeploy run from the phone focuses each tab it rebuilds, so every rebuilt
+  dock opens its sidebar.
 - If the leftmost column of a tab is stacked, the pane takes the tallest pane's
   height rather than the full tab height.
 - If the tab layout is unavailable at the moment an event fires, that tab is
@@ -277,6 +303,16 @@ of them live — with no focus event in between, where the old behaviour left th
 session with no docks at all until something created a tab. The focus stayed on
 `w8:p1`, the pane it was on before, and the client's view stayed on w8 rather than
 following the last tab rebuilt.
+
+v0.5.0 was verified on 0.9.0 in the same way: closing a sidebar from a row,
+the toggle or the strip left a 5-column strip beside a 40-column pane, and
+tapping the strip opened it again; a tab closed on the phone was still the strip
+when reached through herdr's switch menu; `+ worktree` made a worktree and its
+workspace and moved there; a dock built in a tab marked closed came up at the
+usual 22 columns and squeezed itself to the strip; and detaching the phone gave
+every tab back at 50 columns, unzoomed, with no mark left. herdr stops a split at
+a ratio of 0.1, and `agent focus` refuses a pane with no agent, which is why
+pasture focuses a shell by zooming and unzooming it.
 
 v0.4.0 was verified on 0.9.0 in an isolated session driven through a 45-column
 and a 120-column pty: attaching at 45 columns opened the sidebar full screen;

@@ -1,6 +1,7 @@
 package ui
 
 import (
+	"errors"
 	"strings"
 	"testing"
 	"time"
@@ -25,11 +26,15 @@ type world struct {
 	focusTab string // the tab holding the server's focus
 	zoomed   bool   // w1:t1 is zoomed
 	focused  string // w1:t1's focused pane
+	dock     int    // the docks' width; 0 is a third of the tab
 }
 
 func (w world) snap() snapshot.Snapshot {
 	area := snapshot.Rect{Width: w.width, Height: 28}
 	half := w.width / 3
+	if w.dock > 0 {
+		half = w.dock
+	}
 	focused := w.focused
 	if focused == "" {
 		focused = "w1:p1"
@@ -62,28 +67,57 @@ func (w world) snap() snapshot.Snapshot {
 func phoneGroups() []group.Group {
 	return []group.Group{
 		{Key: "/r/a", Label: "a", Rows: []group.Row{{Kind: group.RowAgent, PaneID: "w1:p1", TabID: selfTab, Title: "one"}}},
-		{Key: "/r/b", Label: "b", Rows: []group.Row{
+		{Key: "/r/b", Label: "b", Repo: true, Rows: []group.Row{
 			{Kind: group.RowAgent, PaneID: "w3:p1", TabID: "w3:t1", Title: "far"},
 			{Kind: group.RowWorkspace, WorkspaceID: "w2", Title: "w2"},
 		}},
 	}
 }
 
+// fakeWorktrees makes worktree w9 (tab w9:t1, shell w9:p1) unless err is set.
+type fakeWorktrees struct {
+	made []string
+	err  error
+}
+
+func (w *fakeWorktrees) CreateWorktree(cwd string) (snapshot.Worktree, error) {
+	w.made = append(w.made, cwd)
+	if w.err != nil {
+		return snapshot.Worktree{}, w.err
+	}
+	return snapshot.Worktree{WorkspaceID: "w9", TabID: "w9:t1", PaneID: "w9:p1"}, nil
+}
+
 type phoneRig struct {
 	t     *testing.T
 	f     *fakeFetcher
+	wt    *fakeWorktrees
 	m     Model
 	marks mobile.Marks
 }
 
 func newPhoneRig(t *testing.T) *phoneRig {
-	f := &fakeFetcher{}
+	f, wt := &fakeFetcher{}, &fakeWorktrees{}
 	marks := mobile.Marks{Dir: t.TempDir()}
 	m := New(f, mapResolver{}, group.Options{SelfToken: token}, time.Second).
-		WithMobile(selfPane, selfTab, 64, marks)
+		WithMobile(selfPane, selfTab, 64, marks, 30).
+		WithWorktrees(wt)
 	m, _ = m.Update(tea.WindowSizeMsg{Width: 40, Height: 20})
-	return &phoneRig{t: t, f: f, m: m, marks: marks}
+	return &phoneRig{t: t, f: f, wt: wt, m: m, marks: marks}
 }
+
+// run runs cmd and feeds the model whatever message it returns.
+func (r *phoneRig) run(cmd tea.Cmd) {
+	r.t.Helper()
+	if cmd == nil {
+		return
+	}
+	if msg := cmd(); msg != nil {
+		r.m, _ = r.m.Update(msg)
+	}
+}
+
+func (r *phoneRig) reset() { r.f.zooms, r.f.resizes, r.f.order = nil, nil, "" }
 
 // poll feeds one snapshot and runs whatever the model asked for, except the
 // next tick.
@@ -114,7 +148,8 @@ func runSkippingTicks(cmd tea.Cmd) {
 	}
 }
 
-func (r *phoneRig) zooms() string { return strings.Join(r.f.zooms, " ") }
+func (r *phoneRig) zooms() string   { return strings.Join(r.f.zooms, " ") }
+func (r *phoneRig) resizes() string { return strings.Join(r.f.resizes, " ") }
 
 func TestPhoneOpensTheSidebarWhenItsTabGainsTheFocus(t *testing.T) {
 	r := newPhoneRig(t)
@@ -126,14 +161,39 @@ func TestPhoneOpensTheSidebarWhenItsTabGainsTheFocus(t *testing.T) {
 	if r.zooms() != "w1:p5:on" {
 		t.Fatalf("zooms = %q, want the dock zoomed", r.zooms())
 	}
-	if back, ok := r.marks.Get(selfTab); !ok || back != "w1:p1" {
-		t.Fatalf("mark = %q, %v; want the tab marked with the pane to go back to", back, ok)
+	if mk, ok := r.marks.Get(selfTab); !ok || mk.Back != "w1:p1" || mk.Width != 15.0/45 {
+		t.Fatalf("mark = %+v, %v; want the pane to go back to and the dock's width", mk, ok)
 	}
 	// Still focused, still on the phone: no second zoom, even if the user
 	// unzoomed by hand in between.
-	r.poll(world{width: 45, focusTab: selfTab})
+	r.poll(world{width: 45, focusTab: selfTab, zoomed: true, focused: selfPane})
+	r.poll(world{width: 45, focusTab: selfTab, dock: 5})
 	if r.zooms() != "w1:p5:on" {
 		t.Fatalf("zooms = %q, want exactly one", r.zooms())
+	}
+}
+
+func TestPhoneKeepsAClosedTabTheStrip(t *testing.T) {
+	r := newPhoneRig(t)
+	_ = r.marks.Set(selfTab, mobile.Mark{Back: "w1:p1", Width: 0.4})
+	r.poll(world{width: 45, focusTab: "w2:t1", dock: 5})
+	r.poll(world{width: 45, focusTab: selfTab, dock: 5})
+	if r.zooms() != "" || r.resizes() != "" {
+		t.Fatalf("zooms = %q resizes = %q; a tab pasture closed must arrive as the strip", r.zooms(), r.resizes())
+	}
+}
+
+func TestPhoneSqueezesAWideDockInAClosedTab(t *testing.T) {
+	r := newPhoneRig(t)
+	_ = r.marks.Set(selfTab, mobile.Mark{Back: "w1:p1"})
+	r.poll(world{width: 45, focusTab: selfTab}) // a dock ensure just built, 15 wide
+	if r.resizes() != "w1:p5 -0.900" || r.zooms() != "" {
+		t.Fatalf("resizes = %q zooms = %q", r.resizes(), r.zooms())
+	}
+	r.reset()
+	r.poll(world{width: 45, focusTab: selfTab, zoomed: true, focused: selfPane})
+	if r.resizes() != "" {
+		t.Fatalf("an open sidebar is never squeezed: %q", r.resizes())
 	}
 }
 
@@ -141,7 +201,7 @@ func TestPhoneLeavesAnAlreadyZoomedTabAlone(t *testing.T) {
 	r := newPhoneRig(t)
 	r.poll(world{width: 45, focusTab: selfTab, zoomed: true})
 	if r.zooms() != "" {
-		t.Fatalf("zooms = %q; the agent the user picked must stay on screen", r.zooms())
+		t.Fatalf("zooms = %q; the agent the user zoomed must stay on screen", r.zooms())
 	}
 }
 
@@ -149,20 +209,40 @@ func TestDesktopNeverZooms(t *testing.T) {
 	r := newPhoneRig(t)
 	r.poll(world{width: 120, focusTab: selfTab})
 	r.poll(world{width: 120, focusTab: selfTab})
-	if r.zooms() != "" {
-		t.Fatalf("zooms = %q", r.zooms())
+	if r.zooms() != "" || r.resizes() != "" {
+		t.Fatalf("zooms = %q resizes = %q", r.zooms(), r.resizes())
 	}
 }
 
-func TestBackOnTheDesktopUndoesTheZoomPastureMade(t *testing.T) {
+func TestBackOnTheDesktopGivesTheTabBack(t *testing.T) {
 	r := newPhoneRig(t)
-	r.poll(world{width: 45, focusTab: selfTab}) // opens: zoom on, marked
-	r.poll(world{width: 120, focusTab: selfTab, zoomed: true, focused: selfPane})
-	if r.zooms() != "w1:p5:on w1:p5:off" {
-		t.Fatalf("zooms = %q", r.zooms())
+	r.m.phone.desktopColumns = 0 // no width_columns: the mark's width it is
+	_ = r.marks.Set(selfTab, mobile.Mark{Back: "w1:p1", Width: 50.0 / 120})
+	r.poll(world{width: 45, focusTab: selfTab, dock: 5})
+	r.poll(world{width: 120, focusTab: selfTab, dock: 12})
+	if r.zooms() != "" || r.resizes() != "w1:p5 0.317" {
+		t.Fatalf("zooms = %q resizes = %q; want the dock back at 50 columns", r.zooms(), r.resizes())
 	}
 	if _, ok := r.marks.Get(selfTab); ok {
-		t.Fatal("the mark must be cleared once the zoom is undone")
+		t.Fatal("the mark must be cleared once the tab is given back")
+	}
+}
+
+func TestBackOnTheDesktopUnzoomsAnOpenSidebar(t *testing.T) {
+	r := newPhoneRig(t)
+	r.poll(world{width: 45, focusTab: selfTab}) // opens: zoom on, marked at 15/45
+	r.poll(world{width: 120, focusTab: selfTab, zoomed: true, focused: selfPane, dock: 30})
+	if r.zooms() != "w1:p5:on w1:p5:off" || r.resizes() != "" {
+		t.Fatalf("zooms = %q resizes = %q", r.zooms(), r.resizes())
+	}
+}
+
+func TestBackOnTheDesktopUsesWidthColumnsWhenTheMarkHasNoWidth(t *testing.T) {
+	r := newPhoneRig(t)
+	_ = r.marks.Set(selfTab, mobile.Mark{Back: "w1:p1"}) // made by the worktree row
+	r.poll(world{width: 120, focusTab: selfTab, dock: 12})
+	if r.resizes() != "w1:p5 0.150" {
+		t.Fatalf("resizes = %q, want the configured 30 columns", r.resizes())
 	}
 }
 
@@ -170,49 +250,58 @@ func TestBackOnTheDesktopLeavesTheUsersOwnZoom(t *testing.T) {
 	r := newPhoneRig(t)
 	r.poll(world{width: 45, focusTab: "w2:t1", zoomed: true}) // zoomed, but not by pasture
 	r.poll(world{width: 120, focusTab: selfTab, zoomed: true})
-	if r.zooms() != "" {
-		t.Fatalf("zooms = %q; an unmarked zoom is the user's", r.zooms())
+	if r.zooms() != "" || r.resizes() != "" {
+		t.Fatalf("zooms = %q resizes = %q; an unmarked tab is the user's", r.zooms(), r.resizes())
 	}
 }
 
 func TestAFreshDockUndoesAZoomLeftBehind(t *testing.T) {
 	r := newPhoneRig(t)
-	if err := r.marks.Set(selfTab, "w1:p1"); err != nil {
-		t.Fatal(err)
-	}
+	_ = r.marks.Set(selfTab, mobile.Mark{Back: "w1:p1"})
 	r.poll(world{width: 120, focusTab: selfTab, zoomed: true})
 	if r.zooms() != "w1:p1:off" {
 		t.Fatalf("zooms = %q", r.zooms())
 	}
 }
 
-func TestPhoneRowZoomsBeforeMoving(t *testing.T) {
+func TestPhoneRowClosesTheSidebarBeforeMoving(t *testing.T) {
 	r := newPhoneRig(t)
 	r.poll(world{width: 45, focusTab: selfTab})
-	r.f.zooms, r.f.order = nil, ""
-	_, cmd := r.m.activate(3) // "far", in w3:t1
+	r.reset()
+	_, cmd := r.m.activate(1) // "one", beside this dock
 	drain(cmd)
-	if r.zooms() != "w3:p1:on" {
-		t.Fatalf("zooms = %q", r.zooms())
+	if r.resizes() != "w1:p5 -0.900" || r.zooms() != "w1:p1:on w1:p1:off" {
+		t.Fatalf("resizes = %q zooms = %q", r.resizes(), r.zooms())
 	}
-	if r.f.order != "zoom,tab,agent" {
-		t.Fatalf("order = %q, want the zoom before the move", r.f.order)
-	}
-	if back, ok := r.marks.Get("w3:t1"); !ok || back != "w3:p1" {
-		t.Fatalf("mark = %q, %v", back, ok)
+	if r.f.order != "resize,zoom,zoom,tab,agent" {
+		t.Fatalf("order = %q, want the close before the move", r.f.order)
 	}
 }
 
-func TestPhoneWorkspaceRowZoomsItsActiveTabsPane(t *testing.T) {
+func TestPhoneRowInAnotherTabMarksItBeforeMoving(t *testing.T) {
 	r := newPhoneRig(t)
 	r.poll(world{width: 45, focusTab: selfTab})
-	r.f.zooms, r.f.order = nil, ""
+	r.reset()
+	_, cmd := r.m.activate(3) // "far", in w3:t1, which the snapshot has no layout for
+	drain(cmd)
+	if r.f.order != "zoom,zoom,tab,agent" {
+		t.Fatalf("order = %q", r.f.order)
+	}
+	if mk, ok := r.marks.Get("w3:t1"); !ok || mk.Back != "w3:p1" {
+		t.Fatalf("mark = %+v, %v", mk, ok)
+	}
+}
+
+func TestPhoneWorkspaceRowClosesOntoItsShell(t *testing.T) {
+	r := newPhoneRig(t)
+	r.poll(world{width: 45, focusTab: selfTab})
+	r.reset()
 	_, cmd := r.m.activate(4) // workspace w2, whose focused pane is its dock
 	drain(cmd)
-	if r.zooms() != "w2:p1:on" {
-		t.Fatalf("zooms = %q, want the shell, never the dock", r.zooms())
+	if r.resizes() != "w2:p9 -0.900" || r.zooms() != "w2:p1:on w2:p1:off" {
+		t.Fatalf("resizes = %q zooms = %q, want the shell, never the dock", r.resizes(), r.zooms())
 	}
-	if r.f.order != "zoom,workspace" {
+	if r.f.order != "resize,zoom,zoom,workspace" {
 		t.Fatalf("order = %q", r.f.order)
 	}
 }
@@ -227,10 +316,117 @@ func TestDesktopRowDoesNotZoom(t *testing.T) {
 	}
 }
 
+func TestTheStripOpensWhereverItIsTapped(t *testing.T) {
+	r := newPhoneRig(t)
+	_ = r.marks.Set(selfTab, mobile.Mark{Back: "w1:p1", Width: 0.4})
+	r.m, _ = r.m.Update(tea.WindowSizeMsg{Width: 3, Height: 20})
+	r.poll(world{width: 45, focusTab: selfTab, dock: 5})
+	if got := r.m.View(); got != titleStyle.Render(cursorMarker) {
+		t.Fatalf("strip view = %q", got)
+	}
+	var cmd tea.Cmd
+	r.m, cmd = r.m.Update(tea.MouseMsg{X: 1, Y: 9, Action: tea.MouseActionPress, Button: tea.MouseButtonLeft})
+	drain(cmd)
+	if r.zooms() != "w1:p5:on" {
+		t.Fatalf("zooms = %q, want the sidebar opened", r.zooms())
+	}
+	r.reset()
+	r.m, cmd = r.m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	drain(cmd)
+	if r.zooms() != "w1:p5:on" {
+		t.Fatalf("enter: zooms = %q", r.zooms())
+	}
+	if mk, _ := r.marks.Get(selfTab); mk.Width != 0.4 {
+		t.Fatalf("opening must keep the desktop width: %+v", mk)
+	}
+}
+
+func TestANarrowDockOnTheDesktopIsNoStrip(t *testing.T) {
+	r := newPhoneRig(t)
+	r.m, _ = r.m.Update(tea.WindowSizeMsg{Width: 3, Height: 20})
+	r.poll(world{width: 120, focusTab: selfTab})
+	if r.m.rail() {
+		t.Fatal("only a phone draws the strip")
+	}
+}
+
+func worktreeLine(m Model) int {
+	for i, l := range m.lines() {
+		if l.worktree {
+			return i
+		}
+	}
+	return -1
+}
+
+func TestTheWorktreeRowIsOnlyOnAPhoneAndOnlyForRepositories(t *testing.T) {
+	r := newPhoneRig(t)
+	r.poll(world{width: 120, focusTab: selfTab})
+	if i := worktreeLine(r.m); i != -1 {
+		t.Fatalf("desktop has a worktree row at %d", i)
+	}
+	r.poll(world{width: 45, focusTab: selfTab})
+	if i := worktreeLine(r.m); i != 5 {
+		t.Fatalf("worktree row at %d, want 5: after b's rows, none for a", i)
+	}
+	if !strings.Contains(r.m.View(), "+ worktree") {
+		t.Fatalf("view:\n%s", r.m.View())
+	}
+	r.m.collapsed["/r/b"] = true
+	if i := worktreeLine(r.m); i != -1 {
+		t.Fatal("a folded group hides its worktree row")
+	}
+}
+
+func TestTheWorktreeRowMakesOneAndGoesThereClosed(t *testing.T) {
+	r := newPhoneRig(t)
+	r.poll(world{width: 45, focusTab: selfTab})
+	r.reset()
+	var cmd tea.Cmd
+	r.m, cmd = r.m.activate(5)
+	if !strings.Contains(r.m.View(), noticeCreating) {
+		t.Fatalf("no sign of the worktree being made:\n%s", r.m.View())
+	}
+	r.run(cmd)
+	if strings.Join(r.wt.made, ",") != "/r/b" {
+		t.Fatalf("made = %v", r.wt.made)
+	}
+	if r.f.order != "workspace" || strings.Join(r.f.focusedWS, ",") != "w9" {
+		t.Fatalf("order = %q ws = %v", r.f.order, r.f.focusedWS)
+	}
+	if mk, ok := r.marks.Get("w9:t1"); !ok || mk.Back != "w9:p1" {
+		t.Fatalf("mark = %+v, %v; the new tab must start closed", mk, ok)
+	}
+	if strings.Contains(r.m.View(), noticeCreating) {
+		t.Fatal("the notice outlived the worktree")
+	}
+}
+
+func TestAWorktreeThatFailsSaysSo(t *testing.T) {
+	r := newPhoneRig(t)
+	r.wt.err = errors.New("not a repo")
+	r.poll(world{width: 45, focusTab: selfTab})
+	var cmd tea.Cmd
+	r.m, cmd = r.m.activate(5)
+	r.run(cmd)
+	if !strings.Contains(r.m.View(), noticeFailed) {
+		t.Fatalf("view:\n%s", r.m.View())
+	}
+	if len(r.f.focusedWS) != 0 {
+		t.Fatal("nowhere to go after a failure")
+	}
+	for i := 0; i < noticePolls; i++ {
+		r.poll(world{width: 45, focusTab: selfTab})
+	}
+	if strings.Contains(r.m.View(), noticeFailed) {
+		t.Fatal("the failure notice must fade")
+	}
+}
+
 func TestPhoneModeNeedsItsOwnIDs(t *testing.T) {
 	f := &fakeFetcher{}
 	m := New(f, mapResolver{}, group.Options{SelfToken: token}, time.Second).
-		WithMobile("", "", 64, mobile.Marks{Dir: t.TempDir()})
+		WithMobile("", "", 64, mobile.Marks{Dir: t.TempDir()}, 0)
 	m, cmd := m.Update(snapshotMsg{gen: m.gen, groups: phoneGroups(), snap: world{width: 45, focusTab: selfTab}.snap()})
 	runSkippingTicks(cmd)
 	_, cmd = m.activate(3)

@@ -2,6 +2,7 @@ package ui
 
 import (
 	"errors"
+	"fmt"
 	"testing"
 	"time"
 
@@ -20,6 +21,13 @@ type fakeFetcher struct {
 	order       string
 	snapshots   int
 	zooms       []string // "pane:on" / "pane:off"
+	resizes     []string // "pane amount"
+}
+
+func (f *fakeFetcher) Resize(id string, amount float64) error {
+	f.resizes = append(f.resizes, fmt.Sprintf("%s %.3f", id, amount))
+	f.note("resize")
+	return nil
 }
 
 func (f *fakeFetcher) Zoom(id string, on bool) error {
@@ -180,10 +188,11 @@ func (c *countingFetcher) Snapshot() (snapshot.Snapshot, error) {
 	c.calls++
 	return snapshot.Snapshot{}, nil
 }
-func (c *countingFetcher) FocusAgent(string) error     { return nil }
-func (c *countingFetcher) FocusWorkspace(string) error { return nil }
-func (c *countingFetcher) FocusTab(string) error       { return nil }
-func (c *countingFetcher) Zoom(string, bool) error     { return nil }
+func (c *countingFetcher) FocusAgent(string) error      { return nil }
+func (c *countingFetcher) FocusWorkspace(string) error  { return nil }
+func (c *countingFetcher) FocusTab(string) error        { return nil }
+func (c *countingFetcher) Zoom(string, bool) error      { return nil }
+func (c *countingFetcher) Resize(string, float64) error { return nil }
 
 // TestRefreshKeepsExactlyOnePollChain drives the model the way bubbletea's
 // event loop does — run every pending cmd, feed the messages back — and counts

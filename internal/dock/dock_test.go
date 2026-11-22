@@ -1218,12 +1218,12 @@ func TestTogglePhoneOpensTheSidebarByZoomingTheDock(t *testing.T) {
 		}
 	}
 	marks := mobile.Marks{Dir: d.StateDir}
-	if back, ok := marks.Get("w1:t1"); !ok || back != "w1:p2" {
-		t.Fatalf("mark = %q, %v; want the tab marked to return to the focused pane", back, ok)
+	if mk, ok := marks.Get("w1:t1"); !ok || mk.Back != "w1:p2" || mk.Width != 15.0/45 {
+		t.Fatalf("mark = %+v, %v; want the tab marked to return to the focused pane, at the dock's width", mk, ok)
 	}
 }
 
-func TestTogglePhoneClosesTheSidebarBackToThePaneItCameFrom(t *testing.T) {
+func TestTogglePhoneClosesTheSidebarIntoAStripBesideThePaneItCameFrom(t *testing.T) {
 	c := phoneTab()
 	d := deps(t, c)
 	if err := Toggle(d, "w1:t1"); err != nil { // open from w1:p2
@@ -1233,11 +1233,14 @@ func TestTogglePhoneClosesTheSidebarBackToThePaneItCameFrom(t *testing.T) {
 	if err := Toggle(d, "w1:t1"); err != nil { // close
 		t.Fatal(err)
 	}
-	if got := zoomCalls(c.calls); !equal(got, []string{"w1:p2:on"}) {
-		t.Fatalf("zooms = %v, want w1:p2 zoomed again", got)
+	if got := zoomCalls(c.calls); !equal(got, []string{"w1:p2:on", "w1:p2:off"}) {
+		t.Fatalf("zooms = %v, want w1:p2 focused and nothing left zoomed", got)
 	}
-	if back, ok := (mobile.Marks{Dir: d.StateDir}).Get("w1:t1"); !ok || back != "w1:p2" {
-		t.Fatalf("mark = %q, %v; the tab is still zoomed by pasture", back, ok)
+	if got := argOf(c.calls, "resize", 0); got != "w1:p5" {
+		t.Fatalf("calls = %v, want the dock squeezed into a strip", c.calls)
+	}
+	if mk, ok := (mobile.Marks{Dir: d.StateDir}).Get("w1:t1"); !ok || mk.Back != "w1:p2" || mk.Width != 15.0/45 {
+		t.Fatalf("mark = %+v, %v; the tab is still pasture's, and keeps its desktop width", mk, ok)
 	}
 }
 
@@ -1249,7 +1252,7 @@ func TestTogglePhoneClosingWithoutAMarkPicksTheLargestPane(t *testing.T) {
 	if err := Toggle(d, "w1:t1"); err != nil {
 		t.Fatal(err)
 	}
-	if got := zoomCalls(c.calls); !equal(got, []string{"w1:p2:on"}) {
+	if got := zoomCalls(c.calls); !equal(got, []string{"w1:p2:on", "w1:p2:off"}) {
 		t.Fatalf("zooms = %v", got)
 	}
 }

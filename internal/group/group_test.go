@@ -57,6 +57,17 @@ func TestBuildGroupsWorktreesUnderMainRepoWithBranch(t *testing.T) {
 	}
 }
 
+func TestBuildMarksRepositoryGroups(t *testing.T) {
+	s := snapshot.Snapshot{Panes: []snapshot.Pane{
+		pane("w1:p1", "w1", "/r/a", "claude", "idle", "a"),
+		pane("w2:p1", "w2", "/home/u/notes", "", "", "zsh"),
+	}}
+	gs := Build(s, mapResolver{"/r/a": {Root: "/r/a"}}, Options{})
+	if len(gs) != 2 || gs[0].Label != "a" || !gs[0].Repo || gs[1].Repo {
+		t.Fatalf("got %+v", gs)
+	}
+}
+
 func TestBuildFallsBackToCwdWhenNotGit(t *testing.T) {
 	s := snapshot.Snapshot{Panes: []snapshot.Pane{pane("w1:p1", "w1", "/home/u/notes", "claude", "idle", "n")}}
 	gs := Build(s, mapResolver{}, Options{})

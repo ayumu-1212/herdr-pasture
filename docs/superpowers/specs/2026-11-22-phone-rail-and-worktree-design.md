@@ -65,8 +65,8 @@ v0.4.0 のスマホ表示では、サイドバーを閉じると別のペイン�
 
 - `back`: 閉じたときに前に出すペイン。
 - `width`: 最初に印を付けたときのドックの幅（タブの幅に対する割合）。分割の比は全
-  クライアント共通なので、これは PC で見ていたときの比と同じ。PC 復帰でこれに戻す。
-  0 は不明。
+  クライアント共通なので、これは PC で見ていたときの比と同じ。PC 復帰時、
+  `width_columns` が無いときにこれに戻す。0 は不明。
 - 既に印があるときは `width` を上書きしない（帯の幅で上書きすると戻せなくなる）。
 - v0.4.0 の印（中身はペイン ID だけ）は `back` として読み、`width` は 0。
 
@@ -90,7 +90,7 @@ func (m Marks) Clear(tabID string) error
 
 func Open(h Herdr, m Marks, l snapshot.Layout, tabID, dockID string) error
 func Close(h Herdr, m Marks, l snapshot.Layout, tabID, dockID, target string) error
-func Restore(h Herdr, m Marks, l snapshot.Layout, tabID, dockID string, fallbackColumns int) error
+func Restore(h Herdr, m Marks, l snapshot.Layout, tabID, dockID string, desktopColumns int) error
 func Wide(l snapshot.Layout, dockID string) bool
 ```
 
@@ -101,8 +101,10 @@ func Wide(l snapshot.Layout, dockID string) bool
   最小の比で止める）→ `target` があれば `Zoom(target, on)` → `Zoom(target, off)`（ズームを
   外しつつフォーカスを target に移す）。`target` が無くタブがズーム中なら、フォーカス中の
   ペインのズームを外す。
-- `Restore`: ズーム中なら外す → ドックを `width × area` 桁（`width` が 0 なら
-  `fallbackColumns`、それも 0 なら幅は触らない）に戻す → 印を消す。
+- `Restore`: ズーム中なら外す → ドックを `desktopColumns`（`width_columns`）桁、
+  それが 0 なら `width × area` 桁に戻す（どちらも 0 なら幅は触らない）→ 印を消す。
+  `width_columns` を優先するのは、スマホ幅で丸めた比（45 桁中 19 桁）を 120 桁に
+  戻すと 51 桁になり、どのみち ensure が 50 桁に直すため（実機で確認）。
 - `Wide`: ドックの幅がタブの幅の 1/5 を超えている。帯（1/10）との間に余裕を取り、
   丸めで直し続けることがないようにする。
 
@@ -161,6 +163,12 @@ func Wide(l snapshot.Layout, dockID string) bool
   印の back))`。選べなければ何もしない。
 - それ以外: `Open`。
 - ドックが無い: 今までどおり作ってから `Open`。
+
+### 6.3 既知の挙動
+
+- スマホから `redeploy` すると、作り直しのたびにそのタブへフォーカスが移るので、
+  作り直されたドックはどれも「印のないタブに入った」と見てサイドバーを開く。
+  v0.4.0 でも同じ。PC 復帰では `width_columns` に戻るので害は無い。
 
 ## 7. エラー処理
 
