@@ -45,7 +45,10 @@ type Row struct {
 type Group struct {
 	Key   string // absolute path used for grouping
 	Label string // display name, unique across groups
-	Rows  []Row
+	// Repo is true when Key is a git repository's root (the main checkout's,
+	// for worktrees), so a new worktree can be made from it.
+	Repo bool
+	Rows []Row
 }
 
 // Options tunes Build.
@@ -136,6 +139,7 @@ func Build(s snapshot.Snapshot, r Resolver, opt Options) []Group {
 			branch = info.Branch
 		}
 		g := groupFor(key)
+		g.Repo = g.Repo || info.Root != ""
 		g.Rows = append(g.Rows, Row{
 			Kind:            RowAgent,
 			PaneID:          p.PaneID,
@@ -166,6 +170,7 @@ func Build(s snapshot.Snapshot, r Resolver, opt Options) []Group {
 			title = workspaceID
 		}
 		g := groupFor(key)
+		g.Repo = g.Repo || info.Root != ""
 		g.Rows = append(g.Rows, Row{
 			Kind:            RowWorkspace,
 			WorkspaceID:     workspaceID,

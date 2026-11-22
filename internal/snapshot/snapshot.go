@@ -137,3 +137,36 @@ func DecodeSplit(data []byte) (string, error) {
 	}
 	return env.Result.Pane.PaneID, nil
 }
+
+// Worktree is what `herdr worktree create` made: the workspace opened on the
+// new checkout, its tab, and the shell pane in it.
+type Worktree struct {
+	WorkspaceID string
+	TabID       string
+	PaneID      string
+}
+
+// DecodeWorktree parses the `herdr worktree create` envelope.
+func DecodeWorktree(data []byte) (Worktree, error) {
+	var env struct {
+		Result struct {
+			Workspace struct {
+				WorkspaceID string `json:"workspace_id"`
+			} `json:"workspace"`
+			Tab struct {
+				TabID string `json:"tab_id"`
+			} `json:"tab"`
+			RootPane struct {
+				PaneID string `json:"pane_id"`
+			} `json:"root_pane"`
+		} `json:"result"`
+	}
+	if err := json.Unmarshal(data, &env); err != nil {
+		return Worktree{}, fmt.Errorf("decode worktree: %w", err)
+	}
+	r := env.Result
+	if r.Workspace.WorkspaceID == "" {
+		return Worktree{}, errors.New("decode worktree: response has no workspace_id")
+	}
+	return Worktree{WorkspaceID: r.Workspace.WorkspaceID, TabID: r.Tab.TabID, PaneID: r.RootPane.PaneID}, nil
+}

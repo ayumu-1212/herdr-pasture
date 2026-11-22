@@ -161,3 +161,15 @@ func (c *Client) ClearToken(paneID, name string) error {
 		"--clear-token", name)
 	return err
 }
+
+// CreateWorktree runs `herdr worktree create --cwd <cwd> --no-focus`: a new
+// git worktree of the repository at cwd, on a branch herdr names, opened in a
+// workspace of its own. It does not move the user there; the caller decides.
+// It runs git, so give it a Runner with a timeout longer than a poll's.
+func (c *Client) CreateWorktree(cwd string) (snapshot.Worktree, error) {
+	out, err := c.r.Run("worktree", "create", "--cwd", cwd, "--no-focus")
+	if err != nil {
+		return snapshot.Worktree{}, err
+	}
+	return snapshot.DecodeWorktree(out)
+}

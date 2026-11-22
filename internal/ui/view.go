@@ -45,6 +45,11 @@ func (m Model) View() string {
 		width = 22 // no WindowSizeMsg yet
 	}
 
+	if m.rail() {
+		// The closed sidebar: nothing to read, only something to tap.
+		return titleStyle.Render(cursorMarker)
+	}
+
 	ls := m.lines()
 	start := m.offset
 	if start > len(ls) {
@@ -65,7 +70,9 @@ func (m Model) View() string {
 			marker = cursorMarker
 		}
 		var text string
-		if l.header {
+		if l.worktree {
+			text = dimStyle.Render(truncate("  + worktree", width-1))
+		} else if l.header {
 			chevron := "▾"
 			if m.collapsed[g.Key] {
 				chevron = "▸"
@@ -108,10 +115,14 @@ func (m Model) View() string {
 // titleBar builds the header as plain text, truncates it, and only then
 // styles the pieces, so truncate never has to reason about escape sequences.
 func (m Model) titleBar(width int) string {
-	if !m.disconnected {
+	extra := m.notice
+	if m.disconnected {
+		extra = disconnectedLabel
+	}
+	if extra == "" {
 		return titleStyle.Render(truncate(appName, width))
 	}
-	plain := truncate(appName+" "+disconnectedLabel, width)
+	plain := truncate(appName+" "+extra, width)
 	if rest, ok := strings.CutPrefix(plain, appName); ok {
 		return titleStyle.Render(appName) + dimStyle.Render(rest)
 	}

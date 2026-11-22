@@ -479,12 +479,13 @@ func Toggle(d Deps, tabID string) error {
 
 // togglePhone is Toggle while the tab is being looked at on a phone, where the
 // dock is a sidebar that opens and closes rather than a column. Open is the
-// dock zoomed and focused; closed is another pane zoomed. It never closes the
+// dock zoomed and focused; closed is the dock squeezed to a strip beside the
+// pane it closed onto, so it can be tapped open again. It never closes the
 // dock: closing would make every reopen wait for a new pane to start.
 //
-// The tab is marked whenever pasture zooms it, so the dock's UI can unzoom it
-// once the desktop looks again, and the mark remembers the pane to go back to.
-// The caller holds tabID's lock.
+// The tab is marked whenever pasture takes it over, so the dock's UI can put it
+// back once the desktop looks again; the mark remembers the pane to go back to
+// and the width the dock had. The caller holds tabID's lock.
 func togglePhone(d Deps, tabID, live string, layout snapshot.Layout) error {
 	marks := mobile.Marks{Dir: d.StateDir}
 	if live == "" {
@@ -505,26 +506,16 @@ func togglePhone(d Deps, tabID, live string, layout snapshot.Layout) error {
 			return err
 		}
 	}
-	remembered, _ := marks.Get(tabID)
 	if layout.Zoomed && layout.FocusedPaneID == live {
-		target, ok := mobile.ReturnPane(layout, live, remembered)
+		remembered, _ := marks.Get(tabID)
+		target, ok := mobile.ReturnPane(layout, live, remembered.Back)
 		if !ok {
 			d.logf("tab %s holds nothing but the dock; leaving the sidebar open", tabID)
 			return nil
 		}
-		if err := marks.Set(tabID, target); err != nil {
-			return err
-		}
-		return d.Client.Zoom(target, true)
+		return mobile.Close(d.Client, marks, layout, tabID, live, target)
 	}
-	back := remembered
-	if f := layout.FocusedPaneID; f != "" && f != live {
-		back = f
-	}
-	if err := marks.Set(tabID, back); err != nil {
-		return err
-	}
-	return d.Client.Zoom(live, true)
+	return mobile.Open(d.Client, marks, layout, tabID, live)
 }
 
 // tabLayout reads tabID's layout through any of its panes. It reports false

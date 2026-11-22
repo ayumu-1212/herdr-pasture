@@ -5,6 +5,8 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+
+	"github.com/ayumu-1212/herdr-pasture/internal/snapshot"
 )
 
 // FakeRunner records argv and replies from a queue of canned outputs.
@@ -150,5 +152,25 @@ func TestZoomBuildsArgv(t *testing.T) {
 	want := [][]string{{"pane", "zoom", "w1:p2", "--on"}, {"pane", "zoom", "w1:p2", "--off"}}
 	if !reflect.DeepEqual(r.Calls, want) {
 		t.Fatalf("argv = %v", r.Calls)
+	}
+}
+
+func TestCreateWorktreeBuildsArgvAndDecodes(t *testing.T) {
+	r := &FakeRunner{Outputs: []string{`{"id":"cli:worktree:create","result":{"root_pane":{"pane_id":"w4:p1","tab_id":"w4:t1"},"tab":{"tab_id":"w4:t1"},"type":"worktree_created","workspace":{"active_tab_id":"w4:t1","workspace_id":"w4"}}}`}}
+	got, err := New(r).CreateWorktree("/src/repo")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := (snapshot.Worktree{WorkspaceID: "w4", TabID: "w4:t1", PaneID: "w4:p1"}); got != want {
+		t.Fatalf("got %+v, want %+v", got, want)
+	}
+	if want := []string{"worktree", "create", "--cwd", "/src/repo", "--no-focus"}; !reflect.DeepEqual(r.Calls[0], want) {
+		t.Fatalf("argv = %v", r.Calls[0])
+	}
+}
+
+func TestCreateWorktreeRejectsAResponseWithoutAWorkspace(t *testing.T) {
+	if _, err := New(&FakeRunner{Outputs: []string{`{"result":{}}`}}).CreateWorktree("/r"); err == nil {
+		t.Fatal("want an error")
 	}
 }
